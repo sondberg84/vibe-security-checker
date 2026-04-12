@@ -315,10 +315,177 @@ def generate_sarif_report(results: Dict[str, Any]) -> Dict[str, Any]:
     
     return sarif
 
+def generate_html_report(results: Dict[str, Any]) -> str:
+    """Generate a self-contained HTML security report."""
+    sec = results.get('security_findings') or {}
+    dep = results.get('dependency_findings') or {}
+    proj = results.get('project_info') or {}
+
+    grade = sec.get('grade', '?')
+    critical = sec.get('critical', 0)
+    high = sec.get('high', 0)
+    medium = sec.get('medium', 0)
+    low = sec.get('low', 0)
+    total = sec.get('total_findings', 0)
+    suppressed = sec.get('suppressed_by_baseline', 0)
+    dep_total = dep.get('total_findings', 0)
+    scan_date = results.get('scan_date', '')[:10]
+
+    grade_color = {'A': '#22c55e', 'B': '#84cc16', 'C': '#f59e0b',
+                   'D': '#f97316', 'F': '#ef4444'}.get(grade, '#6b7280')
+
+    def sev_badge(sev: str) -> str:
+        colors = {'CRITICAL': '#ef4444', 'HIGH': '#f97316',
+                  'MEDIUM': '#f59e0b', 'LOW': '#3b82f6'}
+        bg = colors.get(sev, '#6b7280')
+        return f'<span style="background:{bg};color:#fff;padding:2px 8px;border-radius:4px;font-size:0.75rem;font-weight:600">{sev}</span>'
+
+    def conf_badge(conf: str) -> str:
+        if conf == 'HIGH':
+            return ''
+        colors = {'MEDIUM': '#f59e0b', 'LOW': '#6b7280'}
+        bg = colors.get(conf, '#6b7280')
+        return f' <span style="background:{bg};color:#fff;padding:1px 6px;border-radius:4px;font-size:0.7rem">{conf} CONF</span>'
+
+    def esc(s: str) -> str:
+        return (str(s)
+                .replace('&', '&amp;').replace('<', '&lt;')
+                .replace('>', '&gt;').replace('"', '&quot;'))
+
+    # Build findings rows
+    findings_html = ""
+    for f in sec.get('findings', []):
+        cwe = f'<small style="color:#6b7280">{esc(f.get("cwe_id",""))} {esc(f.get("cwe_name",""))}</small>' if f.get('cwe_id') else ''
+        fix = f'<div style="margin-top:4px;color:#374151"><strong>Fix:</strong> {esc(f.get("remediation",""))}</div>'
+        hint = ''
+        if f.get('fix_hint'):
+            hint = f'<pre style="margin:6px 0 0;background:#f3f4f6;padding:6px 8px;border-radius:4px;font-size:0.78rem;overflow:auto">{esc(f["fix_hint"])}</pre>'
+        findings_html += f"""
+        <div style="border:1px solid #e5e7eb;border-radius:8px;padding:14px 16px;margin-bottom:12px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            {sev_badge(f.get('severity',''))}
+            {conf_badge(f.get('confidence','HIGH'))}
+            <strong style="font-family:monospace">[{esc(f.get('rule_id',''))}]</strong>
+            <span>{esc(f.get('description',''))}</span>
+          </div>
+          <div style="color:#6b7280;font-size:0.85rem">{esc(f.get('file',''))}:{f.get('line',0)} {cwe}</div>
+          <pre style="margin:6px 0;background:#f3f4f6;padding:6px 8px;border-radius:4px;font-size:0.78rem;overflow:auto">{esc(f.get('snippet',''))}</pre>
+          {fix}{hint}
+        </div>"""
+
+    # Dependency rows
+    dep_html = ""
+    for f in dep.get('findings', []):
+        dep_html += f"""
+        <div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;margin-bottom:10px">
+          <div style="display:flex;gap:8px;align-items:center">
+            {sev_badge(f.get('severity','HIGH'))}
+            <strong>{esc(f.get('package',''))}</strong>
+            <span style="color:#6b7280;font-size:0.85rem">{esc(f.get('version') or '')}</span>
+            <span style="color:#6b7280;font-size:0.85rem">({esc(f.get('type',''))})</span>
+          </div>
+          <div style="margin-top:4px">{esc(f.get('description',''))}</div>
+          <div style="color:#6b7280;font-size:0.85rem;margin-top:2px">{esc(f.get('file',''))}</div>
+          <div style="margin-top:4px;color:#374151"><strong>Fix:</strong> {esc(f.get('remediation',''))}</div>
+        </div>"""
+
+    # Semgrep rows
+    semgrep = results.get('semgrep_findings') or {}
+    semgrep_html = ""
+    if semgrep.get('available') and semgrep.get('findings'):
+        for f in semgrep['findings']:
+            semgrep_html += f"""
+            <div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;margin-bottom:10px">
+              <div><strong>[{esc(f.get('rule_id',''))}]</strong> {sev_badge(f.get('severity','WARNING'))}</div>
+              <div style="color:#6b7280;font-size:0.85rem">{esc(f.get('file',''))}:{f.get('line',0)}</div>
+              <div style="margin-top:4px">{esc(f.get('message',''))}</div>
+            </div>"""
+
+    proj_html = ""
+    if proj and 'error' not in proj:
+        proj_html = f"""
+        <section style="margin-bottom:32px">
+          <h2 style="font-size:1.2rem;border-bottom:2px solid #e5e7eb;padding-bottom:6px">Project Analysis</h2>
+          <table style="border-collapse:collapse;width:100%;font-size:0.9rem">
+            <tr><td style="padding:4px 8px;color:#6b7280;width:160px">Type</td><td>{esc(proj.get('project_type',''))}</td></tr>
+            <tr><td style="padding:4px 8px;color:#6b7280">Languages</td><td>{esc(', '.join(proj.get('languages',[])) or 'Unknown')}</td></tr>
+            <tr><td style="padding:4px 8px;color:#6b7280">Frameworks</td><td>{esc(', '.join(proj.get('frameworks',[])) or 'None')}</td></tr>
+            <tr><td style="padding:4px 8px;color:#6b7280">Databases</td><td>{esc(', '.join(proj.get('databases',[])) or 'None')}</td></tr>
+            <tr><td style="padding:4px 8px;color:#6b7280">Cloud</td><td>{esc(', '.join(proj.get('cloud_services',[])) or 'None')}</td></tr>
+          </table>
+        </section>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vibe Security Report — {esc(results.get('project_path',''))}</title>
+<style>
+  body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:0;background:#f9fafb;color:#111827}}
+  .container{{max-width:900px;margin:0 auto;padding:32px 24px}}
+  h1{{font-size:1.6rem;margin-bottom:4px}}
+  h2{{font-size:1.2rem;border-bottom:2px solid #e5e7eb;padding-bottom:6px;margin-top:32px}}
+  .grade{{display:inline-flex;align-items:center;justify-content:center;width:72px;height:72px;
+          border-radius:50%;font-size:2.4rem;font-weight:800;color:#fff;background:{grade_color}}}
+  .summary-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:12px;margin:20px 0}}
+  .card{{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px;text-align:center}}
+  .card .num{{font-size:2rem;font-weight:700}}
+  .card .lbl{{font-size:0.75rem;color:#6b7280;text-transform:uppercase;letter-spacing:.05em}}
+</style>
+</head>
+<body>
+<div class="container">
+  <header style="display:flex;align-items:center;gap:24px;margin-bottom:24px">
+    <div class="grade">{grade}</div>
+    <div>
+      <h1>Vibe Security Report</h1>
+      <div style="color:#6b7280">{esc(results.get('project_path',''))}</div>
+      <div style="color:#6b7280;font-size:0.85rem">Scanned {esc(scan_date)}</div>
+    </div>
+  </header>
+
+  <div class="summary-grid">
+    <div class="card"><div class="num" style="color:#ef4444">{critical}</div><div class="lbl">Critical</div></div>
+    <div class="card"><div class="num" style="color:#f97316">{high}</div><div class="lbl">High</div></div>
+    <div class="card"><div class="num" style="color:#f59e0b">{medium}</div><div class="lbl">Medium</div></div>
+    <div class="card"><div class="num" style="color:#3b82f6">{low}</div><div class="lbl">Low</div></div>
+    <div class="card"><div class="num" style="color:#6b7280">{dep_total}</div><div class="lbl">Dependency</div></div>
+    {"" if not suppressed else f'<div class="card"><div class="num" style="color:#22c55e">{suppressed}</div><div class="lbl">Suppressed</div></div>'}
+  </div>
+
+  {proj_html}
+
+  {"<section><h2>Security Findings</h2>" + findings_html + "</section>" if sec.get('findings') else '<section><h2>Security Findings</h2><p style="color:#22c55e;font-weight:600">No security findings.</p></section>'}
+
+  {"<section><h2>Dependency Findings</h2>" + dep_html + "</section>" if dep.get('findings') else ""}
+
+  {"<section><h2>Semgrep Findings</h2>" + semgrep_html + "</section>" if semgrep_html else ""}
+
+  <section style="margin-top:40px;padding-top:16px;border-top:1px solid #e5e7eb">
+    <h2>Best Practices</h2>
+    <ul style="line-height:1.8;color:#374151">
+      <li>Always review AI-generated code before committing</li>
+      <li>Run this scanner as part of your CI/CD pipeline</li>
+      <li>Never commit secrets — use environment variables or a secrets manager</li>
+      <li>Verify all AI-suggested packages exist before installing</li>
+      <li>Rotate any credential that has ever appeared in git history</li>
+    </ul>
+  </section>
+
+  <footer style="margin-top:40px;color:#9ca3af;font-size:0.8rem;text-align:center">
+    Generated by <strong>Vibe Security Checker</strong>
+  </footer>
+</div>
+</body>
+</html>"""
+    return html
+
+
 def main():
     parser = argparse.ArgumentParser(description='Generate security report')
     parser.add_argument('path', help='Path to project directory')
-    parser.add_argument('--format', choices=['markdown', 'json', 'sarif'], default='markdown',
+    parser.add_argument('--format', choices=['markdown', 'json', 'sarif', 'html'], default='markdown',
                         help='Output format')
     parser.add_argument('--output', '-o', help='Output file path')
     parser.add_argument('--baseline', metavar='FILE',
@@ -343,6 +510,8 @@ def main():
         output = generate_markdown_report(results)
     elif args.format == 'sarif':
         output = json.dumps(generate_sarif_report(results), indent=2)
+    elif args.format == 'html':
+        output = generate_html_report(results)
     else:
         output = json.dumps(results, indent=2)
     

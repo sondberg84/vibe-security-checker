@@ -39,6 +39,7 @@ class Finding:
     cwe_name: str = ""
     owasp: str = ""
     fix_hint: str = ""
+    confidence: str = "HIGH"   # HIGH | MEDIUM | LOW
 
     def fingerprint(self) -> str:
         """Stable identity for this finding — survives line number shifts."""
@@ -188,6 +189,64 @@ CWE_MAP: Dict[str, tuple] = {
     "NET-001": ("CWE-319", "Cleartext Transmission of Sensitive Information", "A02:2021 – Cryptographic Failures"),
     **{r: ("CWE-614", "Sensitive Cookie Without 'Secure' Attribute", "A05:2021 – Security Misconfiguration")
        for r in ("NET-002","NET-003","NET-004")},
+
+    # SSRF
+    **{r: ("CWE-918", "Server-Side Request Forgery", "A10:2021 – Server-Side Request Forgery")
+       for r in ("SSRF-001","SSRF-002","SSRF-003","SSRF-004","SSRF-005")},
+
+    # JWT
+    **{r: ("CWE-347", "Improper Verification of Cryptographic Signature", "A02:2021 – Cryptographic Failures")
+       for r in ("JWT-001","JWT-002","JWT-003","JWT-004","JWT-005")},
+
+    # Security headers
+    **{r: ("CWE-693", "Protection Mechanism Failure", "A05:2021 – Security Misconfiguration")
+       for r in ("HDR-001","HDR-002","HDR-003","HDR-004","HDR-005","HDR-006")},
+}
+
+# ============================================================================
+# CONFIDENCE MAP
+# HIGH   — pattern is specific enough that false positives are rare
+# MEDIUM — pattern may fire on test/example code; manual verify recommended
+# LOW    — heuristic; many false positives expected
+# ============================================================================
+
+CONFIDENCE_MAP: Dict[str, str] = {
+    # Very specific key formats → HIGH (default, no entry needed)
+
+    # Generic patterns that fire on placeholders → MEDIUM
+    "SEC-007": "MEDIUM",   # AI placeholder secret
+    "SEC-008": "MEDIUM",   # bare "secret"
+    "SEC-009": "MEDIUM",   # password123
+    "SEC-010": "MEDIUM",   # admin@example.com
+    "SEC-011": "MEDIUM",   # changeme
+    "SEC-012": "MEDIUM",   # generic password assignment
+    "SEC-013": "MEDIUM",   # generic api_key assignment
+    "SEC-017": "MEDIUM",   # generic api_secret
+
+    # Injection — f-string SQL is usually real, concatenation sometimes test code
+    "INJ-003": "MEDIUM",
+    "INJ-004": "MEDIUM",
+    "INJ-006": "MEDIUM",
+
+    # Heuristic / broad patterns → LOW
+    "AUTH-020": "LOW",     # Flask route (no auth decorator — many false positives)
+    "AUTH-021": "LOW",     # Express route — same
+    "INJ-040": "LOW",      # Path traversal sequence in content
+    "DBG-003": "LOW",      # debug:true in JSON (may be in test configs)
+    "NET-001": "MEDIUM",   # HTTP URL (may be intentional for internal services)
+    "SSRF-001": "MEDIUM",  # SSRF heuristics
+    "SSRF-002": "MEDIUM",
+    "SSRF-003": "MEDIUM",
+    "SSRF-004": "MEDIUM",
+    "SSRF-005": "MEDIUM",
+    "HDR-001": "MEDIUM",
+    "HDR-002": "MEDIUM",
+    "HDR-003": "LOW",
+    "HDR-004": "LOW",
+    "HDR-005": "LOW",
+    "HDR-006": "LOW",
+    "JWT-004": "LOW",      # algorithm list — may be intentional
+    "JWT-005": "LOW",
 }
 
 # ============================================================================
@@ -265,6 +324,23 @@ RULE_EXTENSIONS: Dict[str, Optional[frozenset]] = {
     "DBG-004": _JS,   # console.log sensitive
     "DBG-005": _PY,   # print() sensitive
     # DBG-003 (debug:true in JSON/config) and NET-* apply to all file types — no entry needed
+
+    # SSRF — language-specific
+    "SSRF-001": _PY,   # requests.*
+    "SSRF-002": _PY,   # urllib
+    "SSRF-003": _JS,   # fetch()
+    "SSRF-004": _JS,   # axios
+    "SSRF-005": _JS,   # http.get
+
+    # JWT — Python by default, but JWT-003/004/005 are language-agnostic
+    "JWT-001": _PY | frozenset({'.js', '.ts', '.jsx', '.tsx'}),
+    "JWT-002": _PY,
+    "JWT-005": _PY,
+
+    # Security headers — JS/config primarily
+    "HDR-003": _JS,   # helmet hsts:false
+    "HDR-004": _PY,   # Django SECURE_HSTS_SECONDS
+    "HDR-005": _PY,   # Django SECURE_SSL_REDIRECT
 
     # Python-specific patterns
     "AUTH-001": _PY,  # hashlib.md5
@@ -468,6 +544,45 @@ HTTPS_PATTERNS = [
      'NET-004', 'Django cookie security setting disabled'),
 ]
 
+SSRF_PATTERNS = [
+    (r'requests\.(get|post|put|delete|patch|head)\s*\([^)]*(?:request\.|req\.|\.args|\.form|\.data|user_|input\()',
+     'SSRF-001', 'SSRF: requests called with user-controlled URL'),
+    (r'urllib\.request\.urlopen\s*\([^)]*(?:request\.|req\.|\.args|\.form|user_|input\()',
+     'SSRF-002', 'SSRF: urllib.urlopen with user-controlled URL'),
+    (r'fetch\s*\(\s*(?:req\b|request\b|user|params|searchParams|formData)',
+     'SSRF-003', 'SSRF: fetch() with user-controlled URL'),
+    (r'axios\.(get|post|put|delete|patch)\s*\(\s*(?:req\b|request\b|user|params)',
+     'SSRF-004', 'SSRF: axios called with user-controlled URL'),
+    (r'http(?:s)?\.(?:get|request)\s*\(\s*(?:req\b|request\b|user|params)',
+     'SSRF-005', 'SSRF: http.get/request with user-controlled URL'),
+]
+
+JWT_PATTERNS = [
+    (r'algorithms?\s*[=:]\s*["\']none["\']', 'JWT-001', 'JWT algorithm=none disables signature verification'),
+    (r'(?:verify\s*=\s*False|options\s*=\s*\{[^}]*["\']verify["\']\s*:\s*False)',
+     'JWT-002', 'JWT signature verification disabled'),
+    (r'jwt\.decode\s*\([^)]*,\s*["\'][^"\']+["\'][^)]*\)',
+     'JWT-003', 'JWT decode — verify algorithms param is explicit and restricted'),
+    (r'(?:HS|RS|ES)(?:256|384|512).*(?:HS|RS|ES)(?:256|384|512)',
+     'JWT-004', 'Multiple JWT algorithms accepted — use exactly one'),
+    (r'ignore_expiration\s*=\s*True', 'JWT-005', 'JWT expiration check disabled'),
+]
+
+HEADER_PATTERNS = [
+    (r'X-Frame-Options.{0,30}[=:,]\s*["\']?ALLOW(?!ED)',
+     'HDR-001', 'X-Frame-Options ALLOW is permissive — use DENY or SAMEORIGIN'),
+    (r'Access-Control-Allow-Credentials["\']?\s*[=:]\s*["\']?true',
+     'HDR-002', 'CORS credentials=true — ensure origin is not wildcard *'),
+    (r'hsts\s*:\s*false',
+     'HDR-003', 'HSTS disabled in helmet — required for HTTPS enforcement'),
+    (r'SECURE_HSTS_SECONDS\s*=\s*0',
+     'HDR-004', 'Django HSTS disabled (SECURE_HSTS_SECONDS=0)'),
+    (r'SECURE_SSL_REDIRECT\s*=\s*False',
+     'HDR-005', 'Django HTTPS redirect disabled'),
+    (r'Content-Security-Policy["\']?\s*[=:]\s*["\']?\*',
+     'HDR-006', "CSP wildcard '*' defeats the policy"),
+]
+
 # File extensions to scan
 SCANNABLE_EXTENSIONS = {
     '.py', '.js', '.ts', '.jsx', '.tsx', '.vue', '.svelte',
@@ -581,6 +696,18 @@ class SecurityScanner:
             if not checks or 'https' in checks:
                 self._check_patterns(file_path, lines, HTTPS_PATTERNS, 'Network', Severity.MEDIUM,
                     'Use HTTPS and set Secure/HttpOnly cookie flags')
+
+            if not checks or 'ssrf' in checks:
+                self._check_patterns(file_path, lines, SSRF_PATTERNS, 'SSRF', Severity.HIGH,
+                    'Validate and allowlist URLs before making server-side requests')
+
+            if not checks or 'jwt' in checks:
+                self._check_patterns(file_path, lines, JWT_PATTERNS, 'JWT', Severity.CRITICAL,
+                    'Use a well-tested JWT library with explicit algorithm and expiry validation')
+
+            if not checks or 'headers' in checks:
+                self._check_patterns(file_path, lines, HEADER_PATTERNS, 'Security Headers', Severity.MEDIUM,
+                    'Set strict security headers (CSP, HSTS, X-Frame-Options)')
 
             # Entropy scan — catches secrets that don't match known patterns
             if not checks or 'secrets' in checks:
@@ -703,6 +830,7 @@ class SecurityScanner:
 
             cwe_id, cwe_name, owasp = CWE_MAP.get(rule_id, ("", "", ""))
             fix_hint = FIX_HINTS.get(rule_id, "")
+            confidence = CONFIDENCE_MAP.get(rule_id, "HIGH")
             finding = Finding(
                 rule_id=rule_id,
                 severity=severity,
@@ -716,6 +844,7 @@ class SecurityScanner:
                 cwe_name=cwe_name,
                 owasp=owasp,
                 fix_hint=fix_hint,
+                confidence=confidence,
             )
             self.result.add(finding)
 
@@ -756,6 +885,7 @@ class SecurityScanner:
                 cwe_name=cwe_name,
                 owasp=owasp,
                 fix_hint=FIX_HINTS.get("SEC-013", ""),
+                confidence="MEDIUM",
             ))
 
 BASELINE_VERSION = 1
@@ -815,9 +945,18 @@ def _display_snippet(f: Finding) -> str:
     return f.code_snippet
 
 
-def print_results(result: ScanResult, json_output: bool = False, suppressed: int = 0):
+def print_results(result: ScanResult, json_output: bool = False,
+                  suppressed: int = 0, vscode_output: bool = False):
     """Print scan results."""
     grade = result.grade()
+
+    # VS Code problem matcher format: file:line: severity: [RULE] message
+    if vscode_output:
+        for f in result.findings:
+            sev = "error" if f.severity in (Severity.CRITICAL, Severity.HIGH) else "warning"
+            print(f"{f.file_path}:{f.line_number}: {sev}: [{f.rule_id}] {f.description}")
+        return
+
     if json_output:
         output = {
             'files_scanned': result.files_scanned,
@@ -842,6 +981,7 @@ def print_results(result: ScanResult, json_output: bool = False, suppressed: int
                     'cwe_name': f.cwe_name,
                     'owasp': f.owasp,
                     'fix_hint': f.fix_hint,
+                    'confidence': f.confidence,
                 }
                 for f in result.findings
             ]
@@ -880,8 +1020,8 @@ def print_results(result: ScanResult, json_output: bool = False, suppressed: int
 
             for f in findings:
                 cwe_str = f" [{f.cwe_id}]" if f.cwe_id else ""
-                owasp_str = f" | {f.owasp}" if f.owasp else ""
-                print(f"\n[{f.rule_id}]{cwe_str} {f.description}{owasp_str}")
+                conf_str = f" [{f.confidence} CONFIDENCE]" if f.confidence != "HIGH" else ""
+                print(f"\n[{f.rule_id}]{cwe_str}{conf_str} {f.description}")
                 print(f"  File: {f.file_path}:{f.line_number}")
                 print(f"  Code: {_display_snippet(f)}")
                 print(f"  Fix:  {f.remediation}")
@@ -918,7 +1058,8 @@ def main():
     parser = argparse.ArgumentParser(description='Vibe Security Checker - Scan AI-generated code for vulnerabilities')
     parser.add_argument('path', help='Path to project directory')
     parser.add_argument('--check', action='append',
-                        choices=['secrets', 'injection', 'auth', 'crypto', 'cloud', 'data', 'xss', 'debug', 'https'],
+                        choices=['secrets', 'injection', 'auth', 'crypto', 'cloud', 'data',
+                                 'xss', 'debug', 'https', 'ssrf', 'jwt', 'headers'],
                         help='Specific check to run (can specify multiple)')
     parser.add_argument('--full', action='store_true', help='Run all checks')
     parser.add_argument('--json', action='store_true', help='Output as JSON')
@@ -930,6 +1071,8 @@ def main():
                         help=f'Save current findings as baseline (default: {DEFAULT_BASELINE})')
     parser.add_argument('--baseline', nargs='?', const=DEFAULT_BASELINE, metavar='FILE',
                         help=f'Compare against baseline, report only new findings (default: {DEFAULT_BASELINE})')
+    parser.add_argument('--vscode', action='store_true',
+                        help='Output in VS Code problem matcher format (file:line: severity: message)')
     parser.add_argument('--diff', action='store_true',
                         help='Only scan files changed since last commit (git diff HEAD)')
     parser.add_argument('--staged', action='store_true',
@@ -987,7 +1130,8 @@ def main():
         known = load_baseline(baseline_path)
         result.findings, suppressed = apply_baseline(result, known)
 
-    print_results(result, args.json, suppressed=suppressed)
+    print_results(result, args.json, suppressed=suppressed,
+                  vscode_output=getattr(args, 'vscode', False))
 
     # Exit code for CI/CD — use config.fail_on unless --fail-on-findings flag is set
     fail_severity = Severity[config.fail_on.upper()]
