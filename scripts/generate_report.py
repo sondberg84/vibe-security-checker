@@ -57,8 +57,41 @@ def run_all_checks(project_path: str) -> Dict[str, Any]:
             results['dependency_findings'] = json.loads(result.stdout)
     except Exception as e:
         results['dependency_findings'] = {'error': str(e)}
-    
+
+    # Run semgrep if available (optional — skips silently if not installed)
+    results['semgrep_findings'] = _run_semgrep(project_path)
+
     return results
+
+
+def _run_semgrep(project_path: str) -> Dict[str, Any]:
+    """Run semgrep with the security-audit ruleset if installed."""
+    try:
+        # Check semgrep is available
+        subprocess.run(['semgrep', '--version'], capture_output=True, timeout=5)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {'available': False}
+
+    try:
+        result = subprocess.run(
+            ['semgrep', '--config', 'p/security-audit', '--json', '--quiet', project_path],
+            capture_output=True, text=True, timeout=120,
+        )
+        data = json.loads(result.stdout)
+        findings = []
+        for r in data.get('results', []):
+            findings.append({
+                'rule_id': r.get('check_id', ''),
+                'severity': r.get('extra', {}).get('severity', 'WARNING').upper(),
+                'message': r.get('extra', {}).get('message', ''),
+                'file': r.get('path', ''),
+                'line': r.get('start', {}).get('line', 0),
+                'cwe': r.get('extra', {}).get('metadata', {}).get('cwe', []),
+                'owasp': r.get('extra', {}).get('metadata', {}).get('owasp', []),
+            })
+        return {'available': True, 'total': len(findings), 'findings': findings}
+    except Exception as e:
+        return {'available': True, 'error': str(e)}
 
 def generate_markdown_report(results: Dict[str, Any]) -> str:
     """Generate a markdown security report."""
@@ -133,7 +166,11 @@ def generate_markdown_report(results: Dict[str, Any]) -> str:
                 lines.append("")
                 
                 for f in severity_findings:
+                    cwe = f"| {f['cwe_id']} – {f['cwe_name']}" if f.get('cwe_id') else ""
+                    owasp = f"| {f['owasp']}" if f.get('owasp') else ""
                     lines.append(f"#### [{f['rule_id']}] {f['description']}")
+                    if cwe or owasp:
+                        lines.append(f"- **Classification:** {cwe} {owasp}".strip())
                     lines.append(f"- **File:** `{f['file']}:{f['line']}`")
                     lines.append(f"- **Code:** `{f['snippet']}`")
                     lines.append(f"- **Fix:** {f['remediation']}")
@@ -153,6 +190,26 @@ def generate_markdown_report(results: Dict[str, Any]) -> str:
             lines.append(f"- **Fix:** {f['remediation']}")
             lines.append("")
     
+    # Semgrep findings
+    semgrep = results.get('semgrep_findings') or {}
+    if semgrep.get('available') and semgrep.get('findings'):
+        lines.append("## Semgrep Findings (p/security-audit)")
+        lines.append("")
+        for f in semgrep['findings']:
+            cwe_str = ', '.join(f['cwe']) if f.get('cwe') else ''
+            owasp_str = ', '.join(f['owasp']) if f.get('owasp') else ''
+            lines.append(f"#### [{f['severity']}] {f['rule_id']}")
+            if cwe_str or owasp_str:
+                lines.append(f"- **Classification:** {cwe_str} {owasp_str}".strip())
+            lines.append(f"- **File:** `{f['file']}:{f['line']}`")
+            lines.append(f"- **Message:** {f['message']}")
+            lines.append("")
+    elif semgrep.get('available') and not semgrep.get('error'):
+        lines.append("## Semgrep")
+        lines.append("")
+        lines.append("No additional findings from semgrep p/security-audit.")
+        lines.append("")
+
     # Recommendations
     lines.append("## Recommendations")
     lines.append("")

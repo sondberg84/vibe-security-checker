@@ -30,6 +30,9 @@ class Finding:
     line_number: int
     code_snippet: str
     remediation: str
+    cwe_id: str = ""
+    cwe_name: str = ""
+    owasp: str = ""
 
 @dataclass
 class ScanResult:
@@ -44,6 +47,71 @@ class ScanResult:
     
     def has_critical(self) -> bool:
         return len(self.get_by_severity(Severity.CRITICAL)) > 0
+
+# ============================================================================
+# CWE / OWASP TOP 10 (2021) MAPPING
+# ============================================================================
+# (rule_id) -> (CWE-ID, CWE name, OWASP 2021 category)
+
+CWE_MAP: Dict[str, tuple] = {
+    # Secrets — CWE-798: Use of Hard-coded Credentials
+    **{r: ("CWE-798", "Use of Hard-coded Credentials", "A02:2021 – Cryptographic Failures")
+       for r in ("SEC-001","SEC-002","SEC-003","SEC-004","SEC-005","SEC-006",
+                 "SEC-007","SEC-008","SEC-010","SEC-011","SEC-012","SEC-013",
+                 "SEC-014","SEC-015","SEC-016","SEC-017","SEC-018","SEC-019",
+                 "SEC-020","SEC-021")},
+    "SEC-009": ("CWE-521", "Weak Password Requirements", "A07:2021 – Identification and Authentication Failures"),
+
+    # SQL Injection
+    **{r: ("CWE-89", "SQL Injection", "A03:2021 – Injection")
+       for r in ("INJ-001","INJ-002","INJ-003","INJ-004","INJ-005","INJ-006")},
+
+    # Command / Code Injection
+    **{r: ("CWE-78", "OS Command Injection", "A03:2021 – Injection")
+       for r in ("INJ-010","INJ-011","INJ-014","INJ-015")},
+    "INJ-012": ("CWE-94",  "Code Injection", "A03:2021 – Injection"),
+    "INJ-013": ("CWE-94",  "Code Injection", "A03:2021 – Injection"),
+
+    # XSS
+    **{r: ("CWE-79", "Cross-site Scripting", "A03:2021 – Injection")
+       for r in ("INJ-020","INJ-021","INJ-022","INJ-023","INJ-024","INJ-025")},
+
+    # NoSQL Injection
+    **{r: ("CWE-943", "Improper Neutralization of Special Elements in Data Query Logic", "A03:2021 – Injection")
+       for r in ("INJ-030","INJ-031","INJ-032")},
+
+    # Path Traversal
+    **{r: ("CWE-22", "Path Traversal", "A01:2021 – Broken Access Control")
+       for r in ("INJ-040","INJ-041","INJ-042")},
+
+    # Authentication
+    **{r: ("CWE-916", "Use of Password Hash With Insufficient Computational Effort", "A02:2021 – Cryptographic Failures")
+       for r in ("AUTH-001","AUTH-002","AUTH-003","AUTH-004")},
+    **{r: ("CWE-922", "Insecure Storage of Sensitive Information", "A02:2021 – Cryptographic Failures")
+       for r in ("AUTH-010","AUTH-011")},
+    **{r: ("CWE-306", "Missing Authentication for Critical Function", "A01:2021 – Broken Access Control")
+       for r in ("AUTH-020","AUTH-021")},
+
+    # Cryptography
+    **{r: ("CWE-327", "Use of a Broken or Risky Cryptographic Algorithm", "A02:2021 – Cryptographic Failures")
+       for r in ("CRYPTO-001","CRYPTO-002","CRYPTO-003")},
+    **{r: ("CWE-338", "Use of Cryptographically Weak Pseudo-Random Number Generator", "A02:2021 – Cryptographic Failures")
+       for r in ("CRYPTO-010","CRYPTO-011","CRYPTO-012")},
+
+    # Cloud / Infrastructure
+    "CLOUD-001": ("CWE-863", "Incorrect Authorization", "A01:2021 – Broken Access Control"),
+    "CLOUD-002": ("CWE-732", "Incorrect Permission Assignment for Critical Resource", "A05:2021 – Security Misconfiguration"),
+    "CLOUD-003": ("CWE-798", "Use of Hard-coded Credentials", "A02:2021 – Cryptographic Failures"),
+    **{r: ("CWE-346", "Origin Validation Error", "A05:2021 – Security Misconfiguration")
+       for r in ("CLOUD-010","CLOUD-011","CLOUD-012")},
+    **{r: ("CWE-732", "Incorrect Permission Assignment for Critical Resource", "A05:2021 – Security Misconfiguration")
+       for r in ("CLOUD-020","CLOUD-021")},
+
+    # Data handling
+    **{r: ("CWE-502", "Deserialization of Untrusted Data", "A08:2021 – Software and Data Integrity Failures")
+       for r in ("DATA-001","DATA-002","DATA-003")},
+    "DATA-010": ("CWE-20", "Improper Input Validation", "A03:2021 – Injection"),
+}
 
 # ============================================================================
 # DETECTION PATTERNS
@@ -255,6 +323,7 @@ class SecurityScanner:
                 # Get code snippet
                 snippet = lines[line_num - 1].strip() if line_num <= len(lines) else ''
                 
+                cwe_id, cwe_name, owasp = CWE_MAP.get(rule_id, ("", "", ""))
                 finding = Finding(
                     rule_id=rule_id,
                     severity=severity,
@@ -263,7 +332,10 @@ class SecurityScanner:
                     file_path=str(file_path.relative_to(self.root)),
                     line_number=line_num,
                     code_snippet=snippet[:100],
-                    remediation=remediation
+                    remediation=remediation,
+                    cwe_id=cwe_id,
+                    cwe_name=cwe_name,
+                    owasp=owasp,
                 )
                 self.result.add(finding)
 
@@ -286,7 +358,10 @@ def print_results(result: ScanResult, json_output: bool = False):
                     'file': f.file_path,
                     'line': f.line_number,
                     'snippet': f.code_snippet,
-                    'remediation': f.remediation
+                    'remediation': f.remediation,
+                    'cwe_id': f.cwe_id,
+                    'cwe_name': f.cwe_name,
+                    'owasp': f.owasp,
                 }
                 for f in result.findings
             ]
@@ -319,7 +394,9 @@ def print_results(result: ScanResult, json_output: bool = False):
             print("-" * 50)
             
             for f in findings:
-                print(f"\n[{f.rule_id}] {f.description}")
+                cwe_str = f" [{f.cwe_id}]" if f.cwe_id else ""
+                owasp_str = f" | {f.owasp}" if f.owasp else ""
+                print(f"\n[{f.rule_id}]{cwe_str} {f.description}{owasp_str}")
                 print(f"  File: {f.file_path}:{f.line_number}")
                 print(f"  Code: {f.code_snippet}")
                 print(f"  Fix:  {f.remediation}")

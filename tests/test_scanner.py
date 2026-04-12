@@ -23,13 +23,24 @@ def scan_code(code: str, filename: str = "test.py") -> list:
         scanner = SecurityScanner(tmpdir)
         result = scanner.scan()
         return [
-            {"rule_id": f.rule_id, "severity": f.severity.name, "line": f.line_number}
+            {
+                "rule_id": f.rule_id,
+                "severity": f.severity.name,
+                "line": f.line_number,
+                "cwe_id": f.cwe_id,
+                "cwe_name": f.cwe_name,
+                "owasp": f.owasp,
+            }
             for f in result.findings
         ]
 
 
 def rule_ids(findings: list) -> set:
     return {f["rule_id"] for f in findings}
+
+
+def finding_for(findings: list, rule_id: str) -> dict:
+    return next((f for f in findings if f["rule_id"] == rule_id), {})
 
 
 # ===========================================================================
@@ -191,6 +202,52 @@ class TestFalsePositives(unittest.TestCase):
         """os.environ.get in a .env-style file should not trigger SEC-021."""
         findings = scan_code("# this is just a comment\nSOME_VAR=short", filename=".env")
         self.assertNotIn("SEC-021", rule_ids(findings))  # 'short' < 16 chars
+
+
+# ===========================================================================
+# CWE / OWASP MAPPING
+# ===========================================================================
+
+class TestCweMapping(unittest.TestCase):
+
+    def test_sql_injection_has_cwe89(self):
+        findings = scan_code('cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")')
+        f = finding_for(findings, "INJ-002")
+        self.assertEqual(f.get("cwe_id"), "CWE-89")
+        self.assertIn("SQL", f.get("cwe_name", ""))
+
+    def test_hardcoded_secret_has_cwe798(self):
+        findings = scan_code('api_key = "abcdef1234567890abcdef"')
+        f = finding_for(findings, "SEC-013")
+        self.assertEqual(f.get("cwe_id"), "CWE-798")
+
+    def test_path_traversal_has_cwe22(self):
+        findings = scan_code('path = "../" + filename')
+        f = finding_for(findings, "INJ-040")
+        self.assertEqual(f.get("cwe_id"), "CWE-22")
+
+    def test_broken_crypto_has_cwe327(self):
+        findings = scan_code('cipher = DES("key")')
+        f = finding_for(findings, "CRYPTO-001")
+        self.assertEqual(f.get("cwe_id"), "CWE-327")
+
+    def test_owasp_category_populated(self):
+        findings = scan_code('cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")')
+        f = finding_for(findings, "INJ-002")
+        self.assertIn("A03:2021", f.get("owasp", ""))
+
+    def test_all_findings_have_cwe(self):
+        """Every finding that hits a mapped rule should have a CWE."""
+        code = textwrap.dedent("""
+            api_key = "abcdef1234567890abcdef"
+            cursor.execute(f"SELECT * FROM users WHERE id = {uid}")
+            os.system("ls " + user_input)
+            path = "../" + filename
+        """)
+        findings = scan_code(code)
+        for f in findings:
+            self.assertNotEqual(f.get("cwe_id", ""), "",
+                msg=f"{f['rule_id']} is missing a CWE mapping")
 
 
 if __name__ == "__main__":
