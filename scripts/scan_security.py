@@ -7,11 +7,13 @@ Detects security vulnerabilities in AI-generated code
 import os
 import re
 import json
+import hashlib
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 from enum import Enum
 
 class Severity(Enum):
@@ -33,6 +35,11 @@ class Finding:
     cwe_id: str = ""
     cwe_name: str = ""
     owasp: str = ""
+
+    def fingerprint(self) -> str:
+        """Stable identity for this finding — survives line number shifts."""
+        key = f"{self.rule_id}:{self.file_path}:{self.code_snippet.strip()}"
+        return hashlib.sha1(key.encode()).hexdigest()[:16]
 
 @dataclass
 class ScanResult:
@@ -339,12 +346,63 @@ class SecurityScanner:
                 )
                 self.result.add(finding)
 
-def print_results(result: ScanResult, json_output: bool = False):
+BASELINE_VERSION = 1
+DEFAULT_BASELINE = ".vibe-security-baseline.json"
+
+
+def save_baseline(result: ScanResult, path: str):
+    """Persist current findings as a baseline for future diff runs."""
+    data = {
+        "version": BASELINE_VERSION,
+        "created": datetime.now().isoformat(),
+        "files_scanned": result.files_scanned,
+        "fingerprints": [f.fingerprint() for f in result.findings],
+        "findings": [
+            {
+                "rule_id": f.rule_id,
+                "severity": f.severity.name,
+                "file": f.file_path,
+                "line": f.line_number,
+                "snippet": f.code_snippet,
+                "fingerprint": f.fingerprint(),
+            }
+            for f in result.findings
+        ],
+    }
+    Path(path).write_text(json.dumps(data, indent=2))
+    print(f"Baseline saved: {len(result.findings)} findings → {path}", file=sys.stderr)
+
+
+def load_baseline(path: str) -> Set[str]:
+    """Return set of fingerprints from a baseline file."""
+    try:
+        data = json.loads(Path(path).read_text())
+        return set(data.get("fingerprints", []))
+    except FileNotFoundError:
+        print(f"Warning: baseline file not found: {path}", file=sys.stderr)
+        return set()
+    except Exception as e:
+        print(f"Warning: could not load baseline ({e})", file=sys.stderr)
+        return set()
+
+
+def apply_baseline(result: ScanResult, baseline_fingerprints: Set[str]) -> tuple:
+    """
+    Split findings into new (not in baseline) and suppressed (in baseline).
+    Returns (new_findings, suppressed_count).
+    """
+    new_findings = [f for f in result.findings if f.fingerprint() not in baseline_fingerprints]
+    suppressed = len(result.findings) - len(new_findings)
+    return new_findings, suppressed
+
+
+def print_results(result: ScanResult, json_output: bool = False, suppressed: int = 0):
     """Print scan results."""
     if json_output:
         output = {
             'files_scanned': result.files_scanned,
             'total_findings': len(result.findings),
+            'suppressed_by_baseline': suppressed,
             'critical': len(result.get_by_severity(Severity.CRITICAL)),
             'high': len(result.get_by_severity(Severity.HIGH)),
             'medium': len(result.get_by_severity(Severity.MEDIUM)),
@@ -375,7 +433,10 @@ def print_results(result: ScanResult, json_output: bool = False):
     print(f"{'='*60}\n")
     
     print(f"Files scanned: {result.files_scanned}")
-    print(f"Total findings: {len(result.findings)}\n")
+    print(f"Total findings: {len(result.findings)}", end="")
+    if suppressed:
+        print(f"  ({suppressed} suppressed by baseline)", end="")
+    print()
     
     # Summary by severity
     print("SUMMARY BY SEVERITY:")
@@ -415,26 +476,42 @@ def main():
     parser.add_argument('--json', action='store_true', help='Output as JSON')
     parser.add_argument('--severity', choices=['critical', 'high', 'medium', 'low'], 
                         help='Minimum severity to report')
-    parser.add_argument('--fail-on-findings', action='store_true', 
+    parser.add_argument('--fail-on-findings', action='store_true',
                         help='Exit with code 1 if findings at or above severity')
-    
+    parser.add_argument('--save-baseline', nargs='?', const=DEFAULT_BASELINE, metavar='FILE',
+                        help=f'Save current findings as baseline (default: {DEFAULT_BASELINE})')
+    parser.add_argument('--baseline', nargs='?', const=DEFAULT_BASELINE, metavar='FILE',
+                        help=f'Compare against baseline, report only new findings (default: {DEFAULT_BASELINE})')
+
     args = parser.parse_args()
-    
+
     if not os.path.exists(args.path):
         print(f"Error: Path '{args.path}' does not exist")
         sys.exit(1)
-    
+
     scanner = SecurityScanner(args.path)
     checks = None if args.full else args.check
     result = scanner.scan(checks)
-    
+
     # Filter by severity if specified
     if args.severity:
         min_severity = Severity[args.severity.upper()]
         result.findings = [f for f in result.findings if f.severity.value >= min_severity.value]
-    
-    print_results(result, args.json)
-    
+
+    # Save baseline before applying diff (so the baseline reflects all findings)
+    if args.save_baseline:
+        baseline_path = str(Path(args.path) / args.save_baseline) if not os.path.isabs(args.save_baseline) else args.save_baseline
+        save_baseline(result, baseline_path)
+
+    # Apply baseline diff
+    suppressed = 0
+    if args.baseline and not args.save_baseline:
+        baseline_path = str(Path(args.path) / args.baseline) if not os.path.isabs(args.baseline) else args.baseline
+        known = load_baseline(baseline_path)
+        result.findings, suppressed = apply_baseline(result, known)
+
+    print_results(result, args.json, suppressed=suppressed)
+
     # Exit code for CI/CD
     if args.fail_on_findings and result.findings:
         sys.exit(1)

@@ -13,7 +13,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any
 
-def run_all_checks(project_path: str) -> Dict[str, Any]:
+def run_all_checks(project_path: str, baseline: str = None) -> Dict[str, Any]:
     """Run all security checks and collect results."""
     results = {
         'scan_date': datetime.now().isoformat(),
@@ -38,10 +38,10 @@ def run_all_checks(project_path: str) -> Dict[str, Any]:
     
     # Run security scan
     try:
-        result = subprocess.run(
-            [sys.executable, str(script_dir / 'scan_security.py'), project_path, '--full', '--json'],
-            capture_output=True, text=True, timeout=120
-        )
+        scan_cmd = [sys.executable, str(script_dir / 'scan_security.py'), project_path, '--full', '--json']
+        if baseline:
+            scan_cmd += ['--baseline', baseline]
+        result = subprocess.run(scan_cmd, capture_output=True, text=True, timeout=120)
         if result.returncode == 0:
             results['security_findings'] = json.loads(result.stdout)
     except Exception as e:
@@ -134,6 +134,9 @@ def generate_markdown_report(results: Dict[str, Any]) -> str:
     lines.append(f"| 🟡 Medium | {medium} |")
     lines.append(f"| 🔵 Low | {low} |")
     lines.append(f"| 📦 Dependencies | {dep_total} |")
+    suppressed = sec.get('suppressed_by_baseline', 0)
+    if suppressed:
+        lines.append(f"| ✅ Suppressed by baseline | {suppressed} |")
     lines.append("")
     
     # Project Info
@@ -288,6 +291,8 @@ def main():
     parser.add_argument('--format', choices=['markdown', 'json', 'sarif'], default='markdown',
                         help='Output format')
     parser.add_argument('--output', '-o', help='Output file path')
+    parser.add_argument('--baseline', metavar='FILE',
+                        help='Suppress findings present in baseline file (pass to scanner)')
     
     args = parser.parse_args()
     
@@ -296,7 +301,7 @@ def main():
         return
     
     print("Running security analysis...")
-    results = run_all_checks(args.path)
+    results = run_all_checks(args.path, baseline=args.baseline)
     
     if args.format == 'markdown':
         output = generate_markdown_report(results)

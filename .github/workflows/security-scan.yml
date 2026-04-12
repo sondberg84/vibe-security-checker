@@ -26,19 +26,47 @@ jobs:
 
       - name: Run security scan
         run: |
-          python vibe-security-checker/scripts/scan_security.py . --full --json > scan_results.json
+          # Use baseline if present (suppresses pre-existing findings, only alerts on new ones)
+          if [ -f ".vibe-security-baseline.json" ]; then
+            echo "Baseline found — reporting new findings only"
+            python vibe-security-checker/scripts/scan_security.py . \
+              --full --json \
+              --baseline .vibe-security-baseline.json \
+              > scan_results.json
+          else
+            echo "No baseline — reporting all findings"
+            python vibe-security-checker/scripts/scan_security.py . \
+              --full --json \
+              > scan_results.json
+          fi
           cat scan_results.json
 
-      - name: Fail on critical findings
+      - name: Fail on new critical findings
         run: |
-          CRITICAL=$(python -c "import json,sys; d=json.load(open('scan_results.json')); sys.exit(1) if d['critical'] > 0 else sys.exit(0)")
+          python -c "
+          import json, sys
+          d = json.load(open('scan_results.json'))
+          new = d['total_findings']
+          suppressed = d.get('suppressed_by_baseline', 0)
+          if suppressed:
+              print(f'{suppressed} existing finding(s) suppressed by baseline')
+          if d['critical'] > 0:
+              print(f'BLOCKED: {d[\"critical\"]} new critical finding(s)')
+              sys.exit(1)
+          print(f'OK: {new} new finding(s), none critical')
+          "
 
-      - name: Upload SARIF to GitHub Security tab
+      - name: Generate SARIF report
         if: always()
         run: |
-          python vibe-security-checker/scripts/generate_report.py . --format sarif --output results.sarif
+          BASELINE_FLAG=""
+          [ -f ".vibe-security-baseline.json" ] && BASELINE_FLAG="--baseline .vibe-security-baseline.json"
+          python vibe-security-checker/scripts/generate_report.py . \
+            --format sarif \
+            --output results.sarif \
+            $BASELINE_FLAG
 
-      - name: Upload SARIF
+      - name: Upload SARIF to GitHub Security tab
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
