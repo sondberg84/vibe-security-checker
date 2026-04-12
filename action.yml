@@ -51,14 +51,19 @@ inputs:
 outputs:
   findings_count:
     description: "Total number of findings"
+    value: ${{ steps.scan.outputs.findings_count }}
   critical_count:
     description: "Number of CRITICAL findings"
+    value: ${{ steps.scan.outputs.critical_count }}
   high_count:
     description: "Number of HIGH findings"
+    value: ${{ steps.scan.outputs.high_count }}
   grade:
     description: "Security grade: A, B, C, D, or F"
+    value: ${{ steps.scan.outputs.grade }}
   sarif_file:
     description: "Path to generated SARIF file"
+    value: ${{ steps.generate_sarif.outputs.sarif_file }}
 
 runs:
   using: "composite"
@@ -74,6 +79,7 @@ runs:
       run: |
         cd "${{ github.workspace }}"
         SCRIPT_DIR="${{ github.action_path }}/scripts"
+        export PYTHONPATH="$SCRIPT_DIR"
 
         # Build flags
         FLAGS=""
@@ -86,41 +92,91 @@ runs:
           done
         fi
         if [ -n "${{ inputs.min_severity }}" ]; then
-          FLAGS="$FLAGS --min-severity ${{ inputs.min_severity }}"
+          SEV=$(echo "${{ inputs.min_severity }}" | tr '[:upper:]' '[:lower:]')
+          FLAGS="$FLAGS --min-severity $SEV"
         fi
-        if [ -n "${{ inputs.baseline }}" ] && [ -f "${{ inputs.baseline }}" ]; then
-          FLAGS="$FLAGS --baseline ${{ inputs.baseline }}"
+        if [ -n "${{ inputs.baseline }}" ] && [ -f "${{ github.workspace }}/${{ inputs.baseline }}" ]; then
+          FLAGS="$FLAGS --baseline ${{ github.workspace }}/${{ inputs.baseline }}"
         fi
 
-        # Run main scan and capture JSON
+        # Run scan once, capture JSON (stderr to separate log so it doesn't corrupt JSON)
         python "$SCRIPT_DIR/scan_security.py" "${{ inputs.path }}" $FLAGS --json \
-          > vibe-scan-results.json 2>&1 || true
+          > vibe-scan-results.json 2>vibe-scan-errors.log || true
+
+        # Print human-readable summary from JSON (no re-scan)
+        python - <<'PYEOF'
+        import sys, json, os
+        sys.path.insert(0, os.environ['PYTHONPATH'])
+        try:
+            data = json.load(open('vibe-scan-results.json'))
+        except Exception:
+            print("Scan produced no results or failed — check vibe-scan-errors.log")
+            sys.exit(0)
+        grade = data.get('grade', '?')
+        total = data.get('total_findings', 0)
+        crit  = data.get('critical', 0)
+        high  = data.get('high', 0)
+        med   = data.get('medium', 0)
+        low   = data.get('low', 0)
+        print(f"\n{'='*60}")
+        print("VIBE SECURITY CHECKER - SCAN RESULTS")
+        print(f"{'='*60}\n")
+        print(f"Files scanned: {data.get('files_scanned', '?')}")
+        print(f"Security Grade: {grade}")
+        print(f"\nSUMMARY:")
+        print(f"  CRITICAL: {crit}")
+        print(f"  HIGH:     {high}")
+        print(f"  MEDIUM:   {med}")
+        print(f"  LOW:      {low}")
+        if data.get('findings'):
+            print("\nFINDINGS:")
+            for f in data['findings']:
+                print(f"  [{f['severity']}] {f['rule_id']} {f['description']}")
+                print(f"    {f['file']}:{f['line']}")
+        else:
+            print("\nNo security issues found!")
+        PYEOF
+
+        # Print any scan warnings
+        if [ -s vibe-scan-errors.log ]; then
+          echo "--- Scanner messages ---"
+          cat vibe-scan-errors.log
+        fi
+        rm -f vibe-scan-errors.log
 
         # Parse counts for outputs
-        TOTAL=$(python -c "import json,sys; d=json.load(open('vibe-scan-results.json')); print(d.get('total_findings', 0))" 2>/dev/null || echo 0)
-        CRITICAL=$(python -c "import json,sys; d=json.load(open('vibe-scan-results.json')); print(sum(1 for f in d.get('findings',[]) if f.get('severity')=='CRITICAL'))" 2>/dev/null || echo 0)
-        HIGH=$(python -c "import json,sys; d=json.load(open('vibe-scan-results.json')); print(sum(1 for f in d.get('findings',[]) if f.get('severity')=='HIGH'))" 2>/dev/null || echo 0)
-        GRADE=$(python -c "import json,sys; d=json.load(open('vibe-scan-results.json')); print(d.get('grade', 'A'))" 2>/dev/null || echo A)
+        TOTAL=$(python -c "import json; d=json.load(open('vibe-scan-results.json')); print(d.get('total_findings', 0))" 2>/dev/null || echo 0)
+        CRITICAL=$(python -c "import json; d=json.load(open('vibe-scan-results.json')); print(d.get('critical', 0))" 2>/dev/null || echo 0)
+        HIGH=$(python -c "import json; d=json.load(open('vibe-scan-results.json')); print(d.get('high', 0))" 2>/dev/null || echo 0)
+        MEDIUM=$(python -c "import json; d=json.load(open('vibe-scan-results.json')); print(d.get('medium', 0))" 2>/dev/null || echo 0)
+        GRADE=$(python -c "import json; d=json.load(open('vibe-scan-results.json')); print(d.get('grade', 'A'))" 2>/dev/null || echo A)
 
         echo "findings_count=$TOTAL" >> $GITHUB_OUTPUT
         echo "critical_count=$CRITICAL" >> $GITHUB_OUTPUT
         echo "high_count=$HIGH" >> $GITHUB_OUTPUT
+        echo "medium_count=$MEDIUM" >> $GITHUB_OUTPUT
         echo "grade=$GRADE" >> $GITHUB_OUTPUT
 
-        # Print human-readable summary
-        python "$SCRIPT_DIR/scan_security.py" "${{ inputs.path }}" $FLAGS || true
-
     - name: Generate SARIF
+      id: generate_sarif
       if: inputs.sarif == 'true'
       shell: bash
       run: |
         SCRIPT_DIR="${{ github.action_path }}/scripts"
+        export PYTHONPATH="$SCRIPT_DIR"
+
+        BASELINE_FLAG=""
+        if [ -n "${{ inputs.baseline }}" ] && [ -f "${{ github.workspace }}/${{ inputs.baseline }}" ]; then
+          BASELINE_FLAG="--baseline ${{ github.workspace }}/${{ inputs.baseline }}"
+        fi
+
         python "$SCRIPT_DIR/generate_report.py" "${{ inputs.path }}" --format sarif \
-          --output "${{ inputs.sarif_file }}"
+          --output "${{ inputs.sarif_file }}" $BASELINE_FLAG || true
+
         echo "sarif_file=${{ inputs.sarif_file }}" >> $GITHUB_OUTPUT
 
     - name: Upload SARIF to GitHub Advanced Security
-      if: inputs.sarif == 'true' && always()
+      if: always() && inputs.sarif == 'true'
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: ${{ inputs.sarif_file }}
@@ -131,6 +187,7 @@ runs:
       shell: bash
       run: |
         SCRIPT_DIR="${{ github.action_path }}/scripts"
+        export PYTHONPATH="$SCRIPT_DIR"
         echo "Scanning git history for committed secrets..."
         python "$SCRIPT_DIR/scan_git_history.py" "${{ inputs.path }}" \
           --max-commits ${{ inputs.max_history_commits }} || true
@@ -138,23 +195,30 @@ runs:
     - name: Fail on severity threshold
       shell: bash
       run: |
-        FAIL_ON="${{ inputs.fail_on }}"
+        FAIL_ON=$(echo "${{ inputs.fail_on }}" | tr '[:lower:]' '[:upper:]')
         if [ "$FAIL_ON" = "NONE" ]; then
           exit 0
         fi
 
-        CRITICAL=${{ steps.scan.outputs.critical_count }}
-        HIGH=${{ steps.scan.outputs.high_count }}
+        # Read counts from the already-captured JSON (not from step outputs, avoids propagation issues)
+        CRITICAL=$(python -c "import json; d=json.load(open('vibe-scan-results.json')); print(d.get('critical', 0))" 2>/dev/null || echo 0)
+        HIGH=$(python -c "import json; d=json.load(open('vibe-scan-results.json')); print(d.get('high', 0))" 2>/dev/null || echo 0)
+        MEDIUM=$(python -c "import json; d=json.load(open('vibe-scan-results.json')); print(d.get('medium', 0))" 2>/dev/null || echo 0)
+        TOTAL=$(python -c "import json; d=json.load(open('vibe-scan-results.json')); print(d.get('total_findings', 0))" 2>/dev/null || echo 0)
 
         case "$FAIL_ON" in
           CRITICAL)
             [ "$CRITICAL" -gt 0 ] && { echo "FAILED: $CRITICAL CRITICAL finding(s)"; exit 1; } || exit 0
             ;;
           HIGH)
-            [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ] && { echo "FAILED: CRITICAL=$CRITICAL HIGH=$HIGH"; exit 1; } || exit 0
+            AT_OR_ABOVE=$(( CRITICAL + HIGH ))
+            [ "$AT_OR_ABOVE" -gt 0 ] && { echo "FAILED: CRITICAL=$CRITICAL HIGH=$HIGH"; exit 1; } || exit 0
             ;;
-          MEDIUM|LOW)
-            TOTAL=${{ steps.scan.outputs.findings_count }}
-            [ "$TOTAL" -gt 0 ] && { echo "FAILED: $TOTAL finding(s) at or above $FAIL_ON"; exit 1; } || exit 0
+          MEDIUM)
+            AT_OR_ABOVE=$(( CRITICAL + HIGH + MEDIUM ))
+            [ "$AT_OR_ABOVE" -gt 0 ] && { echo "FAILED: $AT_OR_ABOVE finding(s) at MEDIUM or above"; exit 1; } || exit 0
+            ;;
+          LOW)
+            [ "$TOTAL" -gt 0 ] && { echo "FAILED: $TOTAL finding(s) detected"; exit 1; } || exit 0
             ;;
         esac

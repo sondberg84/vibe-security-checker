@@ -1,0 +1,40 @@
+name: Security Scan
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    - cron: "0 3 * * 1"   # Weekly Monday 03:00 UTC
+
+permissions:
+  contents: read
+  security-events: write   # Required for SARIF upload to GitHub Advanced Security
+
+jobs:
+  scan:
+    name: Vibe Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Vibe Security Checker
+        id: vibe
+        uses: ./
+        with:
+          path: .
+          full: true
+          fail_on: HIGH
+          sarif: true
+          sarif_file: vibe-security-results.sarif
+          scan_history: false
+
+      - name: Print scan summary
+        if: always()
+        run: |
+          echo "Security Grade : ${{ steps.vibe.outputs.grade }}"
+          echo "Total findings : ${{ steps.vibe.outputs.findings_count }}"
+          echo "Critical       : ${{ steps.vibe.outputs.critical_count }}"
+          echo "High           : ${{ steps.vibe.outputs.high_count }}"

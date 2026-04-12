@@ -257,7 +257,7 @@ def generate_sarif_report(results: Dict[str, Any]) -> Dict[str, Any]:
                 "driver": {
                     "name": "Vibe Security Checker",
                     "version": "1.0.0",
-                    "informationUri": "https://github.com/your-org/vibe-security-checker",
+                    "informationUri": "https://github.com/sondberg84/vibe-security-checker",
                     "rules": []
                 }
             },

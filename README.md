@@ -31,12 +31,79 @@ vibe-security-checker /path/to/project --full
 ```
 
 ### Option C — GitHub Actions
+
+Add to any workflow (`.github/workflows/security.yml`):
+
+```yaml
+name: Security Scan
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+  security-events: write   # for SARIF upload
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vibe Security Check
+        id: vibe
+        uses: sondberg84/vibe-security-checker@v1
+        with:
+          path: .            # directory to scan
+          full: true         # run all check categories
+          fail_on: HIGH      # fail the build on HIGH or CRITICAL findings
+          sarif: true        # upload results to GitHub Security tab
+
+      - name: Print summary
+        if: always()
+        run: |
+          echo "Grade: ${{ steps.vibe.outputs.grade }}"
+          echo "Findings: ${{ steps.vibe.outputs.findings_count }}"
+```
+
+**All inputs:**
+
+| Input | Default | Description |
+|---|---|---|
+| `path` | `.` | Directory to scan |
+| `full` | `true` | Run all check categories |
+| `checks` | — | Comma-separated subset: `secrets,injection,xss,auth,crypto,cloud,data,debug,https,ssrf,jwt,headers` |
+| `min_severity` | `LOW` | Minimum severity to report |
+| `fail_on` | `HIGH` | Fail build at this severity: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `NONE` |
+| `sarif` | `true` | Upload SARIF to GitHub Advanced Security |
+| `sarif_file` | `vibe-security-results.sarif` | SARIF output path |
+| `baseline` | — | Path to baseline file — only report new findings |
+| `scan_history` | `false` | Also scan git history for committed secrets |
+| `max_history_commits` | `200` | Commit limit for history scan |
+
+**All outputs:**
+
+| Output | Description |
+|---|---|
+| `findings_count` | Total findings after severity filter |
+| `critical_count` | CRITICAL finding count |
+| `high_count` | HIGH finding count |
+| `grade` | Security grade A–F |
+| `sarif_file` | Path to generated SARIF file |
+
+> **Note:** SARIF upload requires `permissions: security-events: write`. On public repos this is free. Private repos require GitHub Advanced Security.
+
+**Using a baseline** (suppress known findings, only alert on new ones):
+
 ```yaml
 - uses: sondberg84/vibe-security-checker@v1
   with:
-    path: .
-    full: true
+    baseline: .vibe-security-baseline.json
     fail_on: HIGH
+```
+
+Commit `.vibe-security-baseline.json` to your repo. Generate it locally with:
+```bash
+python scripts/scan_security.py . --full --save-baseline .vibe-security-baseline.json
 ```
 
 ---
