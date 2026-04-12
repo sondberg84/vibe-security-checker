@@ -196,7 +196,7 @@ def generate_markdown_report(results: Dict[str, Any]) -> str:
         lines.append("")
         
         for f in dep['findings']:
-            icon = {'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡'}[f['severity']]
+            icon = {'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡', 'LOW': '🔵'}.get(f['severity'], '🔵')
             lines.append(f"### {icon} {f['package']} ({f['type']})")
             lines.append(f"- **Version:** {f.get('version', 'Unknown')}")
             lines.append(f"- **Issue:** {f['description']}")

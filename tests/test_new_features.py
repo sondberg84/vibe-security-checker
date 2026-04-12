@@ -303,6 +303,25 @@ class TestLanguageFiltering(unittest.TestCase):
         py_rules = [r for r, exts in RULE_EXTENSIONS.items() if exts and '.py' in exts]
         self.assertGreater(len(py_rules), 0)
 
+    def test_check_xss_only_runs_xss_subcategory(self):
+        """--check xss should find XSS in JS but not SQL injection in the same file."""
+        code = 'element.innerHTML = userInput;\ncursor.execute("SELECT * FROM t WHERE id=" + x)\n'
+        config = ScanConfig(checks=['xss'])
+        result = scan(code, filename="app.js", config=config)
+        rule_ids = {f.rule_id for f in result.findings}
+        self.assertIn("INJ-020", rule_ids, "--check xss should detect innerHTML XSS")
+        # SQL injection should NOT fire when only xss check is selected
+        sql_ids = {r for r in rule_ids if r.startswith("INJ-00") or r.startswith("INJ-01")}
+        self.assertEqual(sql_ids, set(), "--check xss should not run SQL/command injection checks")
+
+    def test_check_injection_runs_all_subcategories_including_xss(self):
+        """--check injection should run sql, command, path_traversal, xss, and nosql."""
+        code = 'element.innerHTML = userInput;\n'
+        config = ScanConfig(checks=['injection'])
+        result = scan(code, filename="app.js", config=config)
+        rule_ids = {f.rule_id for f in result.findings}
+        self.assertIn("INJ-020", rule_ids, "--check injection should include XSS patterns")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Git diff incremental scan

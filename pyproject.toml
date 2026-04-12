@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "vibe-security-checker"
+version = "1.0.0"
+description = "Security scanner for AI-generated (vibe-coded) Python and JavaScript projects"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+keywords = ["security", "scanner", "sast", "ai", "vibe-coding", "secrets", "vulnerabilities"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+# No mandatory third-party dependencies — scanner works with stdlib only.
+# Optional: requests for CVE lookup (check_dependencies.py uses it if available)
+dependencies = []
+
+[project.optional-dependencies]
+cve = ["requests>=2.28"]
+dev = ["requests>=2.28"]
+
+[project.scripts]
+vibe-security-checker = "vibe_security_checker.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-dir]
+"vibe_security_checker" = "scripts"
+
+[project.urls]
+Homepage = "https://github.com/sondberg84/vibe-security-checker"
+Issues = "https://github.com/sondberg84/vibe-security-checker/issues"

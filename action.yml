@@ -1,0 +1,160 @@
+name: "Vibe Security Checker"
+description: "Scan your repository for security vulnerabilities in AI-generated code"
+author: "sondberg84"
+
+branding:
+  icon: "shield"
+  color: "red"
+
+inputs:
+  path:
+    description: "Path to scan (relative to repository root)"
+    required: false
+    default: "."
+  full:
+    description: "Run all check categories (secrets, injection, auth, crypto, cloud, data, debug, https, ssrf, jwt, headers)"
+    required: false
+    default: "true"
+  checks:
+    description: "Comma-separated list of specific checks to run (overrides full)"
+    required: false
+    default: ""
+  min_severity:
+    description: "Minimum severity to report: CRITICAL, HIGH, MEDIUM, LOW"
+    required: false
+    default: "LOW"
+  fail_on:
+    description: "Exit with failure if findings of this severity or higher are found: CRITICAL, HIGH, MEDIUM, LOW, NONE"
+    required: false
+    default: "HIGH"
+  sarif:
+    description: "Upload SARIF results to GitHub Advanced Security"
+    required: false
+    default: "true"
+  sarif_file:
+    description: "Path for SARIF output file"
+    required: false
+    default: "vibe-security-results.sarif"
+  scan_history:
+    description: "Also scan git history for secrets (slower)"
+    required: false
+    default: "false"
+  max_history_commits:
+    description: "Maximum commits to scan in git history"
+    required: false
+    default: "200"
+  baseline:
+    description: "Path to baseline file — only report new findings not in the baseline"
+    required: false
+    default: ""
+
+outputs:
+  findings_count:
+    description: "Total number of findings"
+  critical_count:
+    description: "Number of CRITICAL findings"
+  high_count:
+    description: "Number of HIGH findings"
+  grade:
+    description: "Security grade: A, B, C, D, or F"
+  sarif_file:
+    description: "Path to generated SARIF file"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Run Vibe Security Scan
+      id: scan
+      shell: bash
+      run: |
+        cd "${{ github.workspace }}"
+        SCRIPT_DIR="${{ github.action_path }}/scripts"
+
+        # Build flags
+        FLAGS=""
+        if [ "${{ inputs.full }}" = "true" ] && [ -z "${{ inputs.checks }}" ]; then
+          FLAGS="$FLAGS --full"
+        fi
+        if [ -n "${{ inputs.checks }}" ]; then
+          for check in $(echo "${{ inputs.checks }}" | tr ',' ' '); do
+            FLAGS="$FLAGS --check $check"
+          done
+        fi
+        if [ -n "${{ inputs.min_severity }}" ]; then
+          FLAGS="$FLAGS --min-severity ${{ inputs.min_severity }}"
+        fi
+        if [ -n "${{ inputs.baseline }}" ] && [ -f "${{ inputs.baseline }}" ]; then
+          FLAGS="$FLAGS --baseline ${{ inputs.baseline }}"
+        fi
+
+        # Run main scan and capture JSON
+        python "$SCRIPT_DIR/scan_security.py" "${{ inputs.path }}" $FLAGS --json \
+          > vibe-scan-results.json 2>&1 || true
+
+        # Parse counts for outputs
+        TOTAL=$(python -c "import json,sys; d=json.load(open('vibe-scan-results.json')); print(d.get('total_findings', 0))" 2>/dev/null || echo 0)
+        CRITICAL=$(python -c "import json,sys; d=json.load(open('vibe-scan-results.json')); print(sum(1 for f in d.get('findings',[]) if f.get('severity')=='CRITICAL'))" 2>/dev/null || echo 0)
+        HIGH=$(python -c "import json,sys; d=json.load(open('vibe-scan-results.json')); print(sum(1 for f in d.get('findings',[]) if f.get('severity')=='HIGH'))" 2>/dev/null || echo 0)
+        GRADE=$(python -c "import json,sys; d=json.load(open('vibe-scan-results.json')); print(d.get('grade', 'A'))" 2>/dev/null || echo A)
+
+        echo "findings_count=$TOTAL" >> $GITHUB_OUTPUT
+        echo "critical_count=$CRITICAL" >> $GITHUB_OUTPUT
+        echo "high_count=$HIGH" >> $GITHUB_OUTPUT
+        echo "grade=$GRADE" >> $GITHUB_OUTPUT
+
+        # Print human-readable summary
+        python "$SCRIPT_DIR/scan_security.py" "${{ inputs.path }}" $FLAGS || true
+
+    - name: Generate SARIF
+      if: inputs.sarif == 'true'
+      shell: bash
+      run: |
+        SCRIPT_DIR="${{ github.action_path }}/scripts"
+        python "$SCRIPT_DIR/generate_report.py" "${{ inputs.path }}" --format sarif \
+          --output "${{ inputs.sarif_file }}"
+        echo "sarif_file=${{ inputs.sarif_file }}" >> $GITHUB_OUTPUT
+
+    - name: Upload SARIF to GitHub Advanced Security
+      if: inputs.sarif == 'true' && always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif_file }}
+      continue-on-error: true
+
+    - name: Scan git history
+      if: inputs.scan_history == 'true'
+      shell: bash
+      run: |
+        SCRIPT_DIR="${{ github.action_path }}/scripts"
+        echo "Scanning git history for committed secrets..."
+        python "$SCRIPT_DIR/scan_git_history.py" "${{ inputs.path }}" \
+          --max-commits ${{ inputs.max_history_commits }} || true
+
+    - name: Fail on severity threshold
+      shell: bash
+      run: |
+        FAIL_ON="${{ inputs.fail_on }}"
+        if [ "$FAIL_ON" = "NONE" ]; then
+          exit 0
+        fi
+
+        CRITICAL=${{ steps.scan.outputs.critical_count }}
+        HIGH=${{ steps.scan.outputs.high_count }}
+
+        case "$FAIL_ON" in
+          CRITICAL)
+            [ "$CRITICAL" -gt 0 ] && { echo "FAILED: $CRITICAL CRITICAL finding(s)"; exit 1; } || exit 0
+            ;;
+          HIGH)
+            [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ] && { echo "FAILED: CRITICAL=$CRITICAL HIGH=$HIGH"; exit 1; } || exit 0
+            ;;
+          MEDIUM|LOW)
+            TOTAL=${{ steps.scan.outputs.findings_count }}
+            [ "$TOTAL" -gt 0 ] && { echo "FAILED: $TOTAL finding(s) at or above $FAIL_ON"; exit 1; } || exit 0
+            ;;
+        esac

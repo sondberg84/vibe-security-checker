@@ -127,17 +127,6 @@ def _cvss_severity(score: float) -> str:
     return "LOW"
 
 
-def _parse_cvss_score(severity_list: list) -> Optional[float]:
-    """Extract the numeric base score from an OSV severity list."""
-    for entry in severity_list:
-        if entry.get("type") in ("CVSS_V3", "CVSS_V2"):
-            vector = entry.get("score", "")
-            # CVSS vector strings: "CVSS:3.1/AV:N/.../..." — base score not included,
-            # but OSV also returns database_specific.severity or cvss_score directly.
-            # Fall through to database_specific handling.
-    return None
-
-
 def _osv_severity(vuln: dict) -> tuple:
     """Return (severity_label, cvss_score) from an OSV vulnerability object."""
     # Try database_specific first (pre-computed)
