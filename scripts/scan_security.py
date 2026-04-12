@@ -6,9 +6,11 @@ Detects security vulnerabilities in AI-generated code
 
 import os
 import re
+import math
 import json
 import hashlib
 import argparse
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +58,18 @@ class ScanResult:
     def has_critical(self) -> bool:
         return len(self.get_by_severity(Severity.CRITICAL)) > 0
 
+    def grade(self) -> str:
+        """Return A–F security grade based on findings."""
+        if self.has_critical():
+            return "F"
+        if self.get_by_severity(Severity.HIGH):
+            return "D"
+        if self.get_by_severity(Severity.MEDIUM):
+            return "C"
+        if self.get_by_severity(Severity.LOW):
+            return "B"
+        return "A"
+
 # ============================================================================
 # CONFIG
 # ============================================================================
@@ -71,6 +85,7 @@ class ScanConfig:
     exclude_rules: Set[str] = field(default_factory=set)
     fail_on: str = "critical"
     custom_patterns: List[dict] = field(default_factory=list)
+    diff_files: Optional[Set[str]] = None       # When set, only scan these files (relative paths)
 
 
 def load_config(project_path: str) -> ScanConfig:
@@ -157,6 +172,9 @@ CWE_MAP: Dict[str, tuple] = {
     **{r: ("CWE-502", "Deserialization of Untrusted Data", "A08:2021 – Software and Data Integrity Failures")
        for r in ("DATA-001","DATA-002","DATA-003")},
     "DATA-010": ("CWE-20", "Improper Input Validation", "A03:2021 – Injection"),
+
+    # Entropy-based secret detection
+    "SEC-ENT": ("CWE-798", "Use of Hard-coded Credentials", "A02:2021 – Cryptographic Failures"),
 }
 
 # ============================================================================
@@ -203,6 +221,93 @@ FIX_HINTS: Dict[str, str] = {
     "SEC-013": "api_key = os.environ.get('API_KEY')  # use env var",
     "SEC-017": "api_secret = os.environ.get('API_SECRET')  # use env var",
 }
+
+# ============================================================================
+# LANGUAGE-AWARE RULE FILTERING
+# Maps rule_id -> set of file extensions where it applies (None = all files)
+# This eliminates false positives (e.g. Python XSS rules, JS pickle rules)
+# ============================================================================
+
+_JS = frozenset({'.js', '.ts', '.jsx', '.tsx', '.vue', '.svelte', '.html', '.htm'})
+_PY = frozenset({'.py'})
+
+RULE_EXTENSIONS: Dict[str, Optional[frozenset]] = {
+    # XSS — only meaningful in JS/HTML files
+    "INJ-020": _JS, "INJ-021": _JS, "INJ-022": _JS,
+    "INJ-023": _JS, "INJ-024": _JS, "INJ-025": _JS,
+    # Node.js-specific patterns
+    "INJ-014": _JS,   # child_process.exec
+    "INJ-030": _JS,   # NoSQL req.body
+    "INJ-031": _JS,
+    "INJ-032": _JS,
+    "AUTH-003": _JS,  # Node.js MD5
+    "AUTH-004": _JS,  # Node.js SHA1
+    "AUTH-010": _JS,  # localStorage
+    "AUTH-011": _JS,  # sessionStorage
+    "AUTH-021": _JS,  # Express route
+    "CRYPTO-011": _JS,  # Math.random
+    # Python-specific patterns
+    "AUTH-001": _PY,  # hashlib.md5
+    "AUTH-002": _PY,  # hashlib.sha1
+    "AUTH-020": _PY,  # @app.route Flask
+    "CRYPTO-010": _PY,  # random.randint
+    "CRYPTO-012": _PY,  # random.choice
+    "DATA-001": _PY,  # pickle
+    "DATA-002": _PY | frozenset({'.yaml', '.yml'}),
+    "DATA-003": _PY,  # torch.load
+    "INJ-002": _PY,   # f-string SQL
+    "INJ-010": _PY,   # os.system
+    "INJ-011": _PY,   # subprocess shell=True
+    "INJ-012": _PY,   # eval() with user input
+    "INJ-013": _PY,   # exec() with user input
+    "INJ-015": _PY,   # subprocess string concat
+    "INJ-041": _PY,   # os.path.join user input
+    "INJ-042": _PY,   # open() user path
+}
+
+# ============================================================================
+# ENTROPY-BASED SECRET DETECTION
+# Catches high-entropy strings near secret variable names — catches secrets
+# that don't match any known pattern (custom keys, invented credentials, etc.)
+# ============================================================================
+
+ENTROPY_THRESHOLD = 4.5      # bits/char — random secrets typically > 4.5
+ENTROPY_MIN_LENGTH = 20      # minimum string length to analyse
+
+# Matches: secret-sounding variable = "long string"
+_ENTROPY_VAR_RE = re.compile(
+    r'(?:api[_-]?key|api[_-]?secret|secret[_-]?key|access[_-]?key|private[_-]?key|'
+    r'auth[_-]?token|bearer|client[_-]?secret|app[_-]?secret|signing[_-]?key|'
+    r'encryption[_-]?key|webhook[_-]?secret|jwt[_-]?secret|hmac[_-]?key)'
+    r'\s*[=:]\s*["\']([A-Za-z0-9+/=_\-]{%d,})["\']' % ENTROPY_MIN_LENGTH,
+    re.IGNORECASE
+)
+
+
+def _shannon_entropy(s: str) -> float:
+    """Shannon entropy of a string in bits per character."""
+    if not s:
+        return 0.0
+    counts: Dict[str, int] = {}
+    for c in s:
+        counts[c] = counts.get(c, 0) + 1
+    n = len(s)
+    return -sum((v / n) * math.log2(v / n) for v in counts.values())
+
+
+# ============================================================================
+# SECRET VALUE MASKING
+# Replaces the actual secret value in display output so credentials don't
+# appear in CI logs or terminal output a second time.
+# ============================================================================
+
+_MASK_RE = re.compile(r'(["\'])([A-Za-z0-9+/=_\-\.@]{8,})\1')
+
+
+def _mask_snippet(snippet: str) -> str:
+    """Replace literal secret values with **** in a code snippet."""
+    return _MASK_RE.sub(r'\g<1>****\g<1>', snippet)
+
 
 # ============================================================================
 # DETECTION PATTERNS
@@ -364,13 +469,19 @@ class SecurityScanner:
         return self.result
 
     def _get_files(self):
-        """Yield all scannable files, respecting exclude_paths from config."""
+        """Yield all scannable files, respecting exclude_paths and diff_files."""
         for root, dirs, files in os.walk(self.root):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
 
             for file in files:
                 file_path = Path(root) / file
                 rel = str(file_path.relative_to(self.root))
+
+                # Incremental mode: only scan files changed in git diff
+                if self.config.diff_files is not None:
+                    rel_posix = file_path.relative_to(self.root).as_posix()
+                    if rel_posix not in self.config.diff_files and rel not in self.config.diff_files:
+                        continue
 
                 # Check against configured exclude_paths (glob-style prefix match)
                 if any(
@@ -418,7 +529,11 @@ class SecurityScanner:
             if not checks or 'data' in checks:
                 self._check_patterns(file_path, lines, DATA_PATTERNS, 'Data Handling', Severity.HIGH,
                     'Use safe deserialization methods')
-                    
+
+            # Entropy scan — catches secrets that don't match known patterns
+            if not checks or 'secrets' in checks:
+                self._check_entropy(file_path, lines)
+
         except Exception as e:
             pass  # Skip files that can't be read
     
@@ -427,12 +542,18 @@ class SecurityScanner:
         """Check file content against patterns. Reports first match per rule per file."""
         content = '\n'.join(lines)
         rel_path = str(file_path.relative_to(self.root))
+        ext = file_path.suffix.lower()
 
         for entry in patterns:
             pattern, rule_id, description = entry[0], entry[1], entry[2]
             rule_remediation = entry[3] if len(entry) > 3 else remediation
 
             if rule_id in self.config.exclude_rules:
+                continue
+
+            # Language-aware filtering: skip rules not applicable to this file type
+            allowed_exts = RULE_EXTENSIONS.get(rule_id)
+            if allowed_exts is not None and ext not in allowed_exts:
                 continue
 
             matches = list(re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE))
@@ -465,6 +586,41 @@ class SecurityScanner:
                 fix_hint=fix_hint,
             )
             self.result.add(finding)
+
+    def _check_entropy(self, file_path: Path, lines: List[str]):
+        """Flag high-entropy strings assigned to secret-sounding variable names."""
+        content = '\n'.join(lines)
+        rel_path = str(file_path.relative_to(self.root))
+
+        if "SEC-ENT" in self.config.exclude_rules:
+            return
+
+        seen_snippets: Set[str] = set()
+        for match in _ENTROPY_VAR_RE.finditer(content):
+            candidate = match.group(1)
+            entropy = _shannon_entropy(candidate)
+            if entropy < ENTROPY_THRESHOLD:
+                continue
+            line_num = content[:match.start()].count('\n') + 1
+            snippet = lines[line_num - 1].strip() if line_num <= len(lines) else ''
+            if snippet in seen_snippets:
+                continue
+            seen_snippets.add(snippet)
+            cwe_id, cwe_name, owasp = CWE_MAP.get("SEC-013", ("", "", ""))
+            self.result.add(Finding(
+                rule_id="SEC-ENT",
+                severity=Severity.CRITICAL,
+                category="Secrets",
+                description=f"High-entropy secret string (entropy={entropy:.2f} bits/char)",
+                file_path=rel_path,
+                line_number=line_num,
+                code_snippet=snippet[:100],
+                remediation="Move secrets to environment variables or a secrets manager",
+                cwe_id=cwe_id,
+                cwe_name=cwe_name,
+                owasp=owasp,
+                fix_hint=FIX_HINTS.get("SEC-013", ""),
+            ))
 
 BASELINE_VERSION = 1
 DEFAULT_BASELINE = ".vibe-security-baseline.json"
@@ -516,13 +672,22 @@ def apply_baseline(result: ScanResult, baseline_fingerprints: Set[str]) -> tuple
     return new_findings, suppressed
 
 
+def _display_snippet(f: Finding) -> str:
+    """Return a masked snippet for Secrets findings, original for everything else."""
+    if f.category == "Secrets":
+        return _mask_snippet(f.code_snippet)
+    return f.code_snippet
+
+
 def print_results(result: ScanResult, json_output: bool = False, suppressed: int = 0):
     """Print scan results."""
+    grade = result.grade()
     if json_output:
         output = {
             'files_scanned': result.files_scanned,
             'total_findings': len(result.findings),
             'suppressed_by_baseline': suppressed,
+            'grade': grade,
             'critical': len(result.get_by_severity(Severity.CRITICAL)),
             'high': len(result.get_by_severity(Severity.HIGH)),
             'medium': len(result.get_by_severity(Severity.MEDIUM)),
@@ -535,7 +700,7 @@ def print_results(result: ScanResult, json_output: bool = False, suppressed: int
                     'description': f.description,
                     'file': f.file_path,
                     'line': f.line_number,
-                    'snippet': f.code_snippet,
+                    'snippet': _display_snippet(f),
                     'remediation': f.remediation,
                     'cwe_id': f.cwe_id,
                     'cwe_name': f.cwe_name,
@@ -547,48 +712,71 @@ def print_results(result: ScanResult, json_output: bool = False, suppressed: int
         }
         print(json.dumps(output, indent=2))
         return
-    
+
     # Console output
+    grade_label = {'A': 'No issues', 'B': 'Low only', 'C': 'Medium issues',
+                   'D': 'High issues', 'F': 'Critical issues'}
     print(f"\n{'='*60}")
     print("VIBE SECURITY CHECKER - SCAN RESULTS")
     print(f"{'='*60}\n")
-    
+
     print(f"Files scanned: {result.files_scanned}")
     print(f"Total findings: {len(result.findings)}", end="")
     if suppressed:
         print(f"  ({suppressed} suppressed by baseline)", end="")
     print()
-    
+    print(f"Security Grade: {grade}  ({grade_label.get(grade, '')})")
+
     # Summary by severity
-    print("SUMMARY BY SEVERITY:")
-    print(f"  🔴 CRITICAL: {len(result.get_by_severity(Severity.CRITICAL))}")
-    print(f"  🟠 HIGH:     {len(result.get_by_severity(Severity.HIGH))}")
-    print(f"  🟡 MEDIUM:   {len(result.get_by_severity(Severity.MEDIUM))}")
-    print(f"  🔵 LOW:      {len(result.get_by_severity(Severity.LOW))}")
+    print("\nSUMMARY BY SEVERITY:")
+    print(f"  CRITICAL: {len(result.get_by_severity(Severity.CRITICAL))}")
+    print(f"  HIGH:     {len(result.get_by_severity(Severity.HIGH))}")
+    print(f"  MEDIUM:   {len(result.get_by_severity(Severity.MEDIUM))}")
+    print(f"  LOW:      {len(result.get_by_severity(Severity.LOW))}")
     print()
-    
+
     # Group findings by severity
     for severity in [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW]:
         findings = result.get_by_severity(severity)
         if findings:
-            icon = {'CRITICAL': '🔴', 'HIGH': '🟠', 'MEDIUM': '🟡', 'LOW': '🔵'}[severity.name]
-            print(f"\n{icon} {severity.name} FINDINGS ({len(findings)}):")
+            print(f"\n{severity.name} FINDINGS ({len(findings)}):")
             print("-" * 50)
-            
+
             for f in findings:
                 cwe_str = f" [{f.cwe_id}]" if f.cwe_id else ""
                 owasp_str = f" | {f.owasp}" if f.owasp else ""
                 print(f"\n[{f.rule_id}]{cwe_str} {f.description}{owasp_str}")
                 print(f"  File: {f.file_path}:{f.line_number}")
-                print(f"  Code: {f.code_snippet}")
+                print(f"  Code: {_display_snippet(f)}")
                 print(f"  Fix:  {f.remediation}")
                 if f.fix_hint:
                     print(f"  Hint: {f.fix_hint}")
-    
+
     if not result.findings:
-        print("✅ No security issues found!")
+        print("No security issues found!")
     elif result.has_critical():
-        print(f"\n⛔ {len(result.get_by_severity(Severity.CRITICAL))} CRITICAL issues must be fixed before deployment!")
+        print(f"\n{len(result.get_by_severity(Severity.CRITICAL))} CRITICAL issues must be fixed before deployment!")
+
+def _git_changed_files(repo_path: str, staged_only: bool = False) -> Optional[Set[str]]:
+    """
+    Return the set of changed file paths (relative, posix) from git.
+    Returns None if git is unavailable or repo_path is not a git repo.
+    """
+    cmd = ['git', 'diff', '--name-only', '--diff-filter=ACMR']
+    if staged_only:
+        cmd.append('--cached')
+    else:
+        cmd.append('HEAD')
+    try:
+        out = subprocess.run(
+            cmd, cwd=repo_path, capture_output=True, text=True, timeout=15
+        )
+        if out.returncode != 0:
+            return None
+        return {line.strip() for line in out.stdout.splitlines() if line.strip()}
+    except Exception:
+        return None
+
 
 def main():
     parser = argparse.ArgumentParser(description='Vibe Security Checker - Scan AI-generated code for vulnerabilities')
@@ -605,12 +793,25 @@ def main():
                         help=f'Save current findings as baseline (default: {DEFAULT_BASELINE})')
     parser.add_argument('--baseline', nargs='?', const=DEFAULT_BASELINE, metavar='FILE',
                         help=f'Compare against baseline, report only new findings (default: {DEFAULT_BASELINE})')
+    parser.add_argument('--diff', action='store_true',
+                        help='Only scan files changed since last commit (git diff HEAD)')
+    parser.add_argument('--staged', action='store_true',
+                        help='Only scan staged files (git diff --cached) — useful in pre-commit hooks')
 
     args = parser.parse_args()
 
     if not os.path.exists(args.path):
         print(f"Error: Path '{args.path}' does not exist")
         sys.exit(1)
+
+    # Resolve git diff files when incremental mode requested
+    diff_files = None
+    if args.diff or args.staged:
+        diff_files = _git_changed_files(args.path, staged_only=args.staged)
+        if diff_files is not None:
+            print(f"Incremental scan: {len(diff_files)} changed file(s)", file=sys.stderr)
+        else:
+            print("Warning: git diff failed — falling back to full scan", file=sys.stderr)
 
     # Load project config — CLI flags override config values
     config = load_config(args.path)
@@ -622,6 +823,8 @@ def main():
         config.checks = args.check
     if args.severity:
         config.severity_threshold = args.severity
+    if diff_files is not None:
+        config.diff_files = diff_files
     if args.baseline:
         config.baseline = args.baseline
     if args.save_baseline:

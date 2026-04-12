@@ -36,8 +36,8 @@ else
     exit 0
 fi
 
-echo "[vibe-security] Running security scan..."
-python "$SCANNER" "$SCANNER_DIR" --full --json > /tmp/vibe_scan_result.json 2>/dev/null
+echo "[vibe-security] Running security scan (staged files only)..."
+python "$SCANNER" "$SCANNER_DIR" --full --staged --json > /tmp/vibe_scan_result.json 2>/dev/null
 
 CRITICAL=$(python -c "import json,sys; d=json.load(open('/tmp/vibe_scan_result.json')); sys.stdout.write(str(d.get('critical',0)))" 2>/dev/null)
 TOTAL=$(python -c "import json,sys; d=json.load(open('/tmp/vibe_scan_result.json')); sys.stdout.write(str(d.get('total_findings',0)))" 2>/dev/null)
