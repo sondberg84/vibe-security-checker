@@ -23,6 +23,56 @@ OSV_TIMEOUT = 15  # seconds
 ECOSYSTEM_PYPI = "PyPI"
 ECOSYSTEM_NPM  = "npm"
 
+# Known typosquats — {typo_name: legitimate_name_or_None}
+# None means the package itself IS the problem (abandoned/malicious)
+KNOWN_TYPOSQUATS: Dict[str, Dict[str, Optional[str]]] = {
+    "python": {
+        # Malicious / abandoned packages
+        "crypto":           "pycryptodome",      # 'crypto' on PyPI is a malicious squatter
+        "pycrypto":         "pycryptodome",      # pycrypto is abandoned, has CVEs
+        "python-jwt":       "PyJWT",             # python-jwt had critical auth bypass (CVE-2022-39227)
+        # Common typos of popular packages
+        "colourama":        "colorama",
+        "coloarama":        "colorama",
+        "requets":          "requests",
+        "reqeusts":         "requests",
+        "requsets":         "requests",
+        "urllib2":          "urllib (built-in, Python 3)",
+        "python-dateutils": "python-dateutil",
+        "pyymal":           "pyyaml",
+        "beautifulsoup":    "beautifulsoup4",
+        "sklearn":          "scikit-learn",      # sklearn alone installs a warning pkg
+        "cv2":              "opencv-python",
+        "mysql-python":     "mysqlclient",       # mysql-python is abandoned
+        "Pillow-PIL":       "Pillow",
+        "tensorflow-gpu":   None,                # deprecated, use tensorflow>=2.12
+        "openai-whisper":   "openai-whisper",    # real but often confused with 'openai'
+    },
+    "npm": {
+        # Confirmed malicious / abandoned
+        "crossenv":         "cross-env",         # malicious package (2018 supply chain attack)
+        "cross.env":        "cross-env",
+        "node-openssl":     "node-forge",        # known malicious squatter
+        # Common typos
+        "lodahs":           "lodash",
+        "lodasch":          "lodash",
+        "expres":           "express",
+        "expresss":         "express",
+        "reacts":           "react",
+        "axois":            "axios",
+        "momet":            "moment",
+        "momnet":           "moment",
+        "mongose":          "mongoose",
+        "mongooes":         "mongoose",
+        "typscript":        "typescript",
+        "nodmon":           "nodemon",
+        "jquer":            "jquery",
+        "jqurey":           "jquery",
+        "discordjs":        "discord.js",
+        "sequlize":         "sequelize",
+    },
+}
+
 # Known hallucinated packages that AI frequently generates
 HALLUCINATED_PACKAGES = {
     'python': {
@@ -220,6 +270,23 @@ class DependencyChecker:
     # Hallucination checks (static, no network)
     # ------------------------------------------------------------------
 
+    def _flag_typosquat(self, pkg: str, legitimate: Optional[str], file_path: str):
+        if legitimate:
+            desc = f'"{pkg}" looks like a typosquat of "{legitimate}" — possible supply chain attack'
+            fix = f'Did you mean "{legitimate}"? Verify the package name before installing.'
+        else:
+            desc = f'"{pkg}" is a known malicious or abandoned package'
+            fix = f'Remove "{pkg}" immediately and check for alternatives.'
+        self.findings.append(DependencyFinding(
+            package=pkg,
+            version=None,
+            issue_type="typosquat",
+            severity="CRITICAL",
+            description=desc,
+            file_path=file_path,
+            remediation=fix,
+        ))
+
     def _flag_hallucinated(self, pkg: str, file_path: str, ecosystem: str):
         tip = "pypi.org" if ecosystem == "python" else "npmjs.com"
         self.findings.append(DependencyFinding(
@@ -248,10 +315,12 @@ class DependencyChecker:
     # ------------------------------------------------------------------
 
     def _check_python_packages(self, packages: Dict[str, Optional[str]], file_path: str):
-        """Hallucination check (static) + OSV batch query for vulnerabilities."""
+        """Hallucination check (static) + typosquat check + OSV batch query for vulnerabilities."""
         for pkg, version in packages.items():
             if pkg in HALLUCINATED_PACKAGES["python"]:
                 self._flag_hallucinated(pkg, file_path, "python")
+            elif pkg in KNOWN_TYPOSQUATS["python"]:
+                self._flag_typosquat(pkg, KNOWN_TYPOSQUATS["python"][pkg], file_path)
 
         if self._osv_available:
             self._osv_check(
@@ -267,6 +336,8 @@ class DependencyChecker:
         for lower, (orig, version) in packages.items():
             if lower in HALLUCINATED_PACKAGES["npm"]:
                 self._flag_hallucinated(orig, file_path, "npm")
+            elif lower in KNOWN_TYPOSQUATS["npm"]:
+                self._flag_typosquat(orig, KNOWN_TYPOSQUATS["npm"][lower], file_path)
             if version in ("*", "latest", ""):
                 self._flag_unpinned(orig, version, file_path,
                                     f"npm install {orig}@<version> --save-exact")
@@ -398,8 +469,19 @@ def print_results(findings: List[DependencyFinding], json_output: bool = False):
     print(f"Total findings: {len(findings)}\n")
 
     hallucinated = [f for f in findings if f.issue_type == "hallucinated"]
+    typosquats   = [f for f in findings if f.issue_type == "typosquat"]
     vulnerable   = [f for f in findings if f.issue_type == "vulnerable"]
     suspicious   = [f for f in findings if f.issue_type == "suspicious"]
+
+    if typosquats:
+        print("CRITICAL - SUSPECTED TYPOSQUATS / MALICIOUS PACKAGES:")
+        print("-" * 50)
+        for f in typosquats:
+            print(f"  {f.package}")
+            print(f"    File:   {f.file_path}")
+            print(f"    Issue:  {f.description}")
+            print(f"    Action: {f.remediation}")
+        print()
 
     if hallucinated:
         print("CRITICAL - POTENTIALLY HALLUCINATED PACKAGES:")
@@ -430,8 +512,11 @@ def print_results(findings: List[DependencyFinding], json_output: bool = False):
 
     if not findings:
         print("No dependency issues found.")
-    elif hallucinated:
-        print(f"{len(hallucinated)} package(s) may be hallucinated — verify before installing.")
+    else:
+        if typosquats:
+            print(f"{len(typosquats)} suspected typosquat(s) — remove immediately.")
+        if hallucinated:
+            print(f"{len(hallucinated)} package(s) may be hallucinated — verify before installing.")
 
 
 def main():

@@ -13,6 +13,7 @@ import argparse
 import subprocess
 import sys
 from datetime import datetime
+from fnmatch import fnmatch
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Set
@@ -175,6 +176,18 @@ CWE_MAP: Dict[str, tuple] = {
 
     # Entropy-based secret detection
     "SEC-ENT": ("CWE-798", "Use of Hard-coded Credentials", "A02:2021 – Cryptographic Failures"),
+
+    # .env not gitignored
+    "GIT-001": ("CWE-312", "Cleartext Storage of Sensitive Information", "A02:2021 – Cryptographic Failures"),
+
+    # Debug mode
+    **{r: ("CWE-215", "Insertion of Sensitive Information Into Debugging Code", "A05:2021 – Security Misconfiguration")
+       for r in ("DBG-001","DBG-002","DBG-003","DBG-004","DBG-005")},
+
+    # Network / HTTPS
+    "NET-001": ("CWE-319", "Cleartext Transmission of Sensitive Information", "A02:2021 – Cryptographic Failures"),
+    **{r: ("CWE-614", "Sensitive Cookie Without 'Secure' Attribute", "A05:2021 – Security Misconfiguration")
+       for r in ("NET-002","NET-003","NET-004")},
 }
 
 # ============================================================================
@@ -246,6 +259,13 @@ RULE_EXTENSIONS: Dict[str, Optional[frozenset]] = {
     "AUTH-011": _JS,  # sessionStorage
     "AUTH-021": _JS,  # Express route
     "CRYPTO-011": _JS,  # Math.random
+    # Debug mode — language-specific
+    "DBG-001": _PY,   # app.run(debug=True)
+    "DBG-002": _PY,   # DEBUG = True
+    "DBG-004": _JS,   # console.log sensitive
+    "DBG-005": _PY,   # print() sensitive
+    # DBG-003 (debug:true in JSON/config) and NET-* apply to all file types — no entry needed
+
     # Python-specific patterns
     "AUTH-001": _PY,  # hashlib.md5
     "AUTH-002": _PY,  # hashlib.sha1
@@ -429,6 +449,25 @@ DATA_PATTERNS = [
     (r'json\.loads?\s*\(.*request', 'DATA-010', 'JSON parse of request (verify schema validation)'),
 ]
 
+DEBUG_PATTERNS = [
+    (r'app\.run\s*\([^)]*debug\s*=\s*True', 'DBG-001', 'Flask app.run() with debug=True — disable before deployment'),
+    (r'(?<!\w)DEBUG\s*=\s*True', 'DBG-002', 'DEBUG=True — disable in production settings'),
+    (r'["\']debug["\']\s*:\s*true', 'DBG-003', 'debug:true in config — disable before deployment'),
+    (r'console\.log\s*\([^)]*(?:password|token|secret|key|auth|credential)', 'DBG-004', 'console.log with sensitive data'),
+    (r'print\s*\([^)]*(?:password|token|secret|api_key|credential)', 'DBG-005', 'print() with sensitive data'),
+]
+
+HTTPS_PATTERNS = [
+    # HTTP in string literals (not localhost / internal addresses)
+    (r'''["\']http://(?!localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|example\.com)[a-zA-Z0-9][^"\']{4,}["\']''',
+     'NET-001', 'Hardcoded HTTP URL — use HTTPS in production'),
+    # Cookie security
+    (r'httpOnly\s*[=:]\s*false', 'NET-002', 'Cookie httpOnly=false — token readable by JavaScript'),
+    (r'''sameSite\s*[=:]\s*["\']?none["\']?(?!.*[Ss]ecure)''', 'NET-003', 'Cookie SameSite=None without Secure flag'),
+    (r'(?:SESSION_COOKIE_SECURE|CSRF_COOKIE_SECURE|SESSION_COOKIE_HTTPONLY)\s*=\s*False',
+     'NET-004', 'Django cookie security setting disabled'),
+]
+
 # File extensions to scan
 SCANNABLE_EXTENSIONS = {
     '.py', '.js', '.ts', '.jsx', '.tsx', '.vue', '.svelte',
@@ -466,6 +505,11 @@ class SecurityScanner:
 
         for file_path in self._get_files():
             self._scan_file(file_path, effective_checks, custom_secrets)
+
+        # .gitignore check (not per-file — runs once)
+        if not effective_checks or 'secrets' in effective_checks:
+            self._check_gitignore()
+
         return self.result
 
     def _get_files(self):
@@ -530,6 +574,14 @@ class SecurityScanner:
                 self._check_patterns(file_path, lines, DATA_PATTERNS, 'Data Handling', Severity.HIGH,
                     'Use safe deserialization methods')
 
+            if not checks or 'debug' in checks:
+                self._check_patterns(file_path, lines, DEBUG_PATTERNS, 'Debug', Severity.MEDIUM,
+                    'Disable debug mode before deploying to production')
+
+            if not checks or 'https' in checks:
+                self._check_patterns(file_path, lines, HTTPS_PATTERNS, 'Network', Severity.MEDIUM,
+                    'Use HTTPS and set Secure/HttpOnly cookie flags')
+
             # Entropy scan — catches secrets that don't match known patterns
             if not checks or 'secrets' in checks:
                 self._check_entropy(file_path, lines)
@@ -537,6 +589,76 @@ class SecurityScanner:
         except Exception as e:
             pass  # Skip files that can't be read
     
+    @staticmethod
+    def _is_suppressed(line: str, rule_id: str) -> bool:
+        """
+        Return True if the line carries a vibe-ignore comment that covers rule_id.
+        Supported forms:
+          # vibe-ignore            — suppress any rule on this line
+          # vibe-ignore SEC-013    — suppress only SEC-013 on this line
+          // vibe-ignore SEC-013   — same, for JS/TS files
+        """
+        marker = "vibe-ignore"
+        for comment_char in ("#", "//"):
+            idx = line.find(f"{comment_char} {marker}")
+            if idx == -1:
+                continue
+            rest = line[idx + len(comment_char) + 1 + len(marker):].strip()
+            if not rest:          # bare vibe-ignore → suppress everything
+                return True
+            if rule_id in rest.split():   # specific rule listed
+                return True
+        return False
+
+    def _check_gitignore(self):
+        """Flag .env files that exist in the project but are not covered by .gitignore."""
+        gitignore_path = self.root / ".gitignore"
+        gitignore_patterns: List[str] = []
+        if gitignore_path.exists():
+            for raw in gitignore_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                raw = raw.strip()
+                if raw and not raw.startswith("#"):
+                    gitignore_patterns.append(raw)
+
+        if "GIT-001" in self.config.exclude_rules:
+            return
+
+        # Collect .env* files (skip .example / .sample / .template)
+        env_candidates = list(self.root.glob(".env")) + list(self.root.glob(".env.*"))
+        env_candidates += list(self.root.glob("**/.env"))
+        env_candidates += list(self.root.glob("**/.env.*"))
+
+        for env_file in set(env_candidates):
+            if any(x in env_file.name for x in ("example", "sample", "template", "test")):
+                continue
+            try:
+                rel = env_file.relative_to(self.root)
+            except ValueError:
+                continue
+            rel_posix = rel.as_posix()
+            rel_name = env_file.name
+
+            covered = any(
+                fnmatch(rel_posix, pat) or fnmatch(rel_name, pat)
+                or rel_posix == pat.lstrip("/") or rel_name == pat.lstrip("/")
+                for pat in gitignore_patterns
+            )
+            if not covered:
+                cwe_id, cwe_name, owasp = CWE_MAP.get("GIT-001", ("", "", ""))
+                self.result.add(Finding(
+                    rule_id="GIT-001",
+                    severity=Severity.CRITICAL,
+                    category="Secrets",
+                    description=f".env file not covered by .gitignore — credentials risk being committed",
+                    file_path=rel_posix,
+                    line_number=1,
+                    code_snippet=f"{rel_posix} (not in .gitignore)",
+                    remediation="Add .env (or *.env) to .gitignore immediately",
+                    cwe_id=cwe_id,
+                    cwe_name=cwe_name,
+                    owasp=owasp,
+                ))
+
     def _check_patterns(self, file_path: Path, lines: List[str], patterns: List[tuple],
                         category: str, severity: Severity, remediation: str):
         """Check file content against patterns. Reports first match per rule per file."""
@@ -556,17 +678,27 @@ class SecurityScanner:
             if allowed_exts is not None and ext not in allowed_exts:
                 continue
 
-            matches = list(re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE))
-            if not matches:
+            raw_matches = list(re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE))
+            if not raw_matches:
                 continue
 
-            # First match becomes the finding
-            match = matches[0]
-            line_num = content[:match.start()].count('\n') + 1
-            snippet = lines[line_num - 1].strip() if line_num <= len(lines) else ''
+            # Filter out matches on suppressed lines
+            valid: list = []
+            for m in raw_matches:
+                ln = content[:m.start()].count('\n') + 1
+                raw_line = lines[ln - 1] if ln <= len(lines) else ''
+                if not self._is_suppressed(raw_line, rule_id):
+                    valid.append((m, ln, raw_line))
 
-            # Append "and N more" to description when duplicates exist
-            extra = len(matches) - 1
+            if not valid:
+                continue
+
+            # First non-suppressed match becomes the finding
+            match, line_num, raw_line = valid[0]
+            snippet = raw_line.strip()
+
+            # "and N more" counts remaining non-suppressed matches
+            extra = len(valid) - 1
             display_description = f"{description} (and {extra} more in this file)" if extra else description
 
             cwe_id, cwe_name, owasp = CWE_MAP.get(rule_id, ("", "", ""))
@@ -602,8 +734,12 @@ class SecurityScanner:
             if entropy < ENTROPY_THRESHOLD:
                 continue
             line_num = content[:match.start()].count('\n') + 1
-            snippet = lines[line_num - 1].strip() if line_num <= len(lines) else ''
+            raw_line = lines[line_num - 1] if line_num <= len(lines) else ''
+            snippet = raw_line.strip()
             if snippet in seen_snippets:
+                continue
+            # Respect inline suppression
+            if self._is_suppressed(raw_line, "SEC-ENT"):
                 continue
             seen_snippets.add(snippet)
             cwe_id, cwe_name, owasp = CWE_MAP.get("SEC-013", ("", "", ""))
@@ -781,7 +917,8 @@ def _git_changed_files(repo_path: str, staged_only: bool = False) -> Optional[Se
 def main():
     parser = argparse.ArgumentParser(description='Vibe Security Checker - Scan AI-generated code for vulnerabilities')
     parser.add_argument('path', help='Path to project directory')
-    parser.add_argument('--check', action='append', choices=['secrets', 'injection', 'auth', 'crypto', 'cloud', 'data', 'xss'],
+    parser.add_argument('--check', action='append',
+                        choices=['secrets', 'injection', 'auth', 'crypto', 'cloud', 'data', 'xss', 'debug', 'https'],
                         help='Specific check to run (can specify multiple)')
     parser.add_argument('--full', action='store_true', help='Run all checks')
     parser.add_argument('--json', action='store_true', help='Output as JSON')
