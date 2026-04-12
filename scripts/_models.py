@@ -38,7 +38,9 @@ class Finding:
 
     def fingerprint(self) -> str:
         """Stable identity for this finding — survives line number shifts."""
-        key = f"{self.rule_id}:{self.file_path}:{self.code_snippet.strip()}"
+        # Normalize to forward slashes so baselines are cross-platform
+        norm_path = self.file_path.replace("\\", "/")
+        key = f"{self.rule_id}:{norm_path}:{self.code_snippet.strip()}"
         return hashlib.sha1(key.encode()).hexdigest()[:16]
 
 

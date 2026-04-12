@@ -1,22 +1,22 @@
 {
   "version": 1,
-  "created": "2026-04-12T23:39:27.307236",
-  "files_scanned": 19,
+  "created": "2026-04-13T00:03:15.878753",
+  "files_scanned": 20,
   "fingerprints": [
-    "0aa95c9eebe0ed73",
-    "37a0cad5c585b216",
-    "e64922c1a1ae628e",
-    "eacbc8bdffea2546",
-    "3e4cdeb4b3a1885e",
-    "5ea1e42a79285342",
-    "d199ba8eaf028d4e",
-    "8e726977c101a0a7",
-    "efa859759fc673ca",
-    "a5e9d5dae4c169da",
-    "687c6d9e12a9540a",
-    "154293a9c4796e57",
-    "d09b2313dba27bf2",
-    "e8779a3d9b0a6fcf"
+    "cb2a087863c7b1d3",
+    "26e867082e53bf61",
+    "3ff7f3b819a70649",
+    "b9f40f41538a684a",
+    "94b487f336104a05",
+    "cd6d5e5f30cf6a7e",
+    "c974b149dc5d3756",
+    "b2a166df02aca0fe",
+    "b266406b862edaff",
+    "dcd9ccf48ca796e9",
+    "6b4b8f150aee5004",
+    "f5808d15c58f0edc",
+    "2a9afb4bdd794f60",
+    "b171ffa17a35e538"
   ],
   "findings": [
     {
@@ -25,15 +25,15 @@
       "file": "scripts\\install_hooks.py",
       "line": 32,
       "snippet": "elif [ -f \"$SCANNER_DIR/../vibe-security-checker/scripts/scan_security.py\" ]; then",
-      "fingerprint": "0aa95c9eebe0ed73"
+      "fingerprint": "cb2a087863c7b1d3"
     },
     {
       "rule_id": "DBG-005",
       "severity": "MEDIUM",
       "file": "scripts\\scan_git_history.py",
-      "line": 251,
+      "line": 256,
       "snippet": "print(\"No secrets found in git history.\")",
-      "fingerprint": "37a0cad5c585b216"
+      "fingerprint": "26e867082e53bf61"
     },
     {
       "rule_id": "INJ-006",
@@ -41,7 +41,7 @@
       "file": "scripts\\_rules.py",
       "line": 356,
       "snippet": "(r'SELECT.*FROM.*WHERE.*\\+.*\\+', 'INJ-006', 'Raw SQL with concatenation'),",
-      "fingerprint": "e64922c1a1ae628e"
+      "fingerprint": "3ff7f3b819a70649"
     },
     {
       "rule_id": "INJ-010",
@@ -49,7 +49,7 @@
       "file": "scripts\\_rules.py",
       "line": 359,
       "snippet": "(r'os\\.system\\s*\\(', 'INJ-010', 'os.system() is dangerous'),",
-      "fingerprint": "eacbc8bdffea2546"
+      "fingerprint": "b9f40f41538a684a"
     },
     {
       "rule_id": "INJ-040",
@@ -57,7 +57,7 @@
       "file": "scripts\\_rules.py",
       "line": 367,
       "snippet": "(r'\\.\\.[\\\\/]', 'INJ-040', 'Path traversal sequence ../'),",
-      "fingerprint": "3e4cdeb4b3a1885e"
+      "fingerprint": "94b487f336104a05"
     },
     {
       "rule_id": "INJ-041",
@@ -65,7 +65,7 @@
       "file": "scripts\\_rules.py",
       "line": 175,
       "snippet": "\"INJ-041\": \"safe = os.path.abspath(os.path.join(base_dir, user_path))\\nassert safe.startswith(base_d",
-      "fingerprint": "5ea1e42a79285342"
+      "fingerprint": "cd6d5e5f30cf6a7e"
     },
     {
       "rule_id": "CRYPTO-002",
@@ -73,7 +73,7 @@
       "file": "scripts\\_rules.py",
       "line": 404,
       "snippet": "(r'\\bBlowfish\\s*\\(', 'CRYPTO-002', 'Blowfish (use AES-256)'),",
-      "fingerprint": "d199ba8eaf028d4e"
+      "fingerprint": "c974b149dc5d3756"
     },
     {
       "rule_id": "CLOUD-011",
@@ -81,7 +81,7 @@
       "file": "scripts\\_rules.py",
       "line": 419,
       "snippet": "(r'Access-Control-Allow-Origin.*\\*', 'CLOUD-011', 'CORS header allows all origins'),",
-      "fingerprint": "8e726977c101a0a7"
+      "fingerprint": "b2a166df02aca0fe"
     },
     {
       "rule_id": "CLOUD-021",
@@ -89,7 +89,7 @@
       "file": "scripts\\_rules.py",
       "line": 424,
       "snippet": "(r'BlockPublicAccess.*false', 'CLOUD-021', 'S3 public access enabled'),",
-      "fingerprint": "efa859759fc673ca"
+      "fingerprint": "b266406b862edaff"
     },
     {
       "rule_id": "DATA-003",
@@ -97,7 +97,7 @@
       "file": "scripts\\_rules.py",
       "line": 195,
       "snippet": "\"DATA-003\": \"model = torch.load(path, weights_only=True)\",",
-      "fingerprint": "a5e9d5dae4c169da"
+      "fingerprint": "dcd9ccf48ca796e9"
     },
     {
       "rule_id": "DBG-001",
@@ -105,7 +105,7 @@
       "file": "scripts\\_rules.py",
       "line": 228,
       "snippet": "\"DBG-001\": _PY,   # app.run(debug=True)",
-      "fingerprint": "687c6d9e12a9540a"
+      "fingerprint": "6b4b8f150aee5004"
     },
     {
       "rule_id": "DBG-002",
@@ -113,7 +113,7 @@
       "file": "scripts\\_rules.py",
       "line": 228,
       "snippet": "\"DBG-001\": _PY,   # app.run(debug=True)",
-      "fingerprint": "154293a9c4796e57"
+      "fingerprint": "f5808d15c58f0edc"
     },
     {
       "rule_id": "NET-002",
@@ -121,7 +121,7 @@
       "file": "scripts\\_rules.py",
       "line": 447,
       "snippet": "(r'httpOnly\\s*[=:]\\s*false', 'NET-002', 'Cookie httpOnly=false \u2014 token readable by JavaScript'),",
-      "fingerprint": "d09b2313dba27bf2"
+      "fingerprint": "2a9afb4bdd794f60"
     },
     {
       "rule_id": "HDR-004",
@@ -129,7 +129,7 @@
       "file": "scripts\\_rules.py",
       "line": 485,
       "snippet": "'HDR-004', 'Django HSTS disabled (SECURE_HSTS_SECONDS=0)'),",
-      "fingerprint": "e8779a3d9b0a6fcf"
+      "fingerprint": "b171ffa17a35e538"
     }
   ]
 }
