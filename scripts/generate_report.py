@@ -13,6 +13,17 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any
 
+def _load_project_config(project_path: str) -> Dict:
+    """Read .vibe-security.json if present."""
+    cfg_file = Path(project_path) / ".vibe-security.json"
+    if cfg_file.exists():
+        try:
+            return json.loads(cfg_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
 def run_all_checks(project_path: str, baseline: str = None) -> Dict[str, Any]:
     """Run all security checks and collect results."""
     results = {
@@ -300,8 +311,14 @@ def main():
         print(f"Error: Path '{args.path}' does not exist")
         return
     
+    # If no --baseline flag, check project config
+    baseline = args.baseline
+    if not baseline:
+        cfg = _load_project_config(args.path)
+        baseline = cfg.get("baseline")
+
     print("Running security analysis...")
-    results = run_all_checks(args.path, baseline=args.baseline)
+    results = run_all_checks(args.path, baseline=baseline)
     
     if args.format == 'markdown':
         output = generate_markdown_report(results)

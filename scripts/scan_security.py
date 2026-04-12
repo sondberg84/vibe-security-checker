@@ -56,6 +56,44 @@ class ScanResult:
         return len(self.get_by_severity(Severity.CRITICAL)) > 0
 
 # ============================================================================
+# CONFIG
+# ============================================================================
+
+CONFIG_FILENAME = ".vibe-security.json"
+
+@dataclass
+class ScanConfig:
+    checks: Optional[List[str]] = None          # None = all checks
+    severity_threshold: str = "low"
+    baseline: Optional[str] = None
+    exclude_paths: List[str] = field(default_factory=list)
+    exclude_rules: Set[str] = field(default_factory=set)
+    fail_on: str = "critical"
+    custom_patterns: List[dict] = field(default_factory=list)
+
+
+def load_config(project_path: str) -> ScanConfig:
+    """Load .vibe-security.json from project root, return defaults if absent."""
+    config_file = Path(project_path) / CONFIG_FILENAME
+    if not config_file.exists():
+        return ScanConfig()
+    try:
+        data = json.loads(config_file.read_text(encoding="utf-8"))
+        return ScanConfig(
+            checks=data.get("checks"),
+            severity_threshold=data.get("severity_threshold", "low"),
+            baseline=data.get("baseline"),
+            exclude_paths=data.get("exclude_paths", []),
+            exclude_rules=set(data.get("exclude_rules", [])),
+            fail_on=data.get("fail_on", "critical"),
+            custom_patterns=data.get("custom_patterns", []),
+        )
+    except Exception as e:
+        print(f"Warning: could not load {CONFIG_FILENAME} ({e})", file=sys.stderr)
+        return ScanConfig()
+
+
+# ============================================================================
 # CWE / OWASP TOP 10 (2021) MAPPING
 # ============================================================================
 # (rule_id) -> (CWE-ID, CWE name, OWASP 2021 category)
@@ -259,49 +297,70 @@ SKIP_DIRS = {
 # ============================================================================
 
 class SecurityScanner:
-    def __init__(self, root_path: str):
+    def __init__(self, root_path: str, config: ScanConfig = None):
         self.root = Path(root_path).resolve()
+        self.config = config or ScanConfig()
         self.result = ScanResult()
-        
+
     def scan(self, checks: Optional[List[str]] = None) -> ScanResult:
         """Run security scan on the project."""
+        # Build effective check list: CLI arg > config > all
+        effective_checks = checks or self.config.checks
+
+        # Merge custom patterns into secrets
+        custom_secrets = [
+            (p["pattern"], p.get("rule_id", "CUSTOM-001"), p.get("description", "Custom pattern"))
+            for p in self.config.custom_patterns
+        ]
+
         for file_path in self._get_files():
-            self._scan_file(file_path, checks)
+            self._scan_file(file_path, effective_checks, custom_secrets)
         return self.result
-    
+
     def _get_files(self):
-        """Yield all scannable files."""
+        """Yield all scannable files, respecting exclude_paths from config."""
         for root, dirs, files in os.walk(self.root):
-            # Skip excluded directories
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-            
+
             for file in files:
                 file_path = Path(root) / file
+                rel = str(file_path.relative_to(self.root))
+
+                # Check against configured exclude_paths (glob-style prefix match)
+                if any(
+                    rel.startswith(ex.rstrip("/")) or
+                    file_path.match(ex)
+                    for ex in self.config.exclude_paths
+                ):
+                    continue
+
                 if file_path.suffix.lower() in SCANNABLE_EXTENSIONS or file.startswith('.env'):
                     yield file_path
                     self.result.files_scanned += 1
-    
-    def _scan_file(self, file_path: Path, checks: Optional[List[str]]):
+
+    def _scan_file(self, file_path: Path, checks: Optional[List[str]], custom_secrets: list = None):
         """Scan a single file for vulnerabilities."""
         try:
             content = file_path.read_text(encoding='utf-8', errors='ignore')
             lines = content.split('\n')
-            
+
+            secrets_patterns = SECRETS_PATTERNS + (custom_secrets or [])
+
             # Run applicable checks
             if not checks or 'secrets' in checks:
-                self._check_patterns(file_path, lines, SECRETS_PATTERNS, 'Secrets', Severity.CRITICAL,
+                self._check_patterns(file_path, lines, secrets_patterns, 'Secrets', Severity.CRITICAL,
                     'Move secrets to environment variables or a secrets manager')
-            
+
             if not checks or 'injection' in checks:
                 for category, patterns in INJECTION_PATTERNS.items():
                     severity = Severity.CRITICAL if category in ('sql', 'command') else Severity.HIGH
                     self._check_patterns(file_path, lines, patterns, f'Injection ({category})', severity,
                         'Use parameterized queries/safe APIs')
-            
+
             if not checks or 'auth' in checks:
                 self._check_patterns(file_path, lines, AUTH_PATTERNS, 'Authentication', Severity.HIGH,
                     'See references/auth.md for secure patterns')
-            
+
             if not checks or 'crypto' in checks:
                 self._check_patterns(file_path, lines, CRYPTO_PATTERNS, 'Cryptography', Severity.HIGH,
                     'Use modern algorithms (AES-256, SHA-256, bcrypt)')
@@ -317,19 +376,25 @@ class SecurityScanner:
         except Exception as e:
             pass  # Skip files that can't be read
     
-    def _check_patterns(self, file_path: Path, lines: List[str], patterns: List[tuple], 
+    def _check_patterns(self, file_path: Path, lines: List[str], patterns: List[tuple],
                         category: str, severity: Severity, remediation: str):
         """Check file content against patterns."""
         content = '\n'.join(lines)
-        
-        for pattern, rule_id, description in patterns:
+
+        for entry in patterns:
+            # Support 3-tuple (pattern, rule_id, description) or
+            # 4-tuple (pattern, rule_id, description, remediation_override)
+            pattern, rule_id, description = entry[0], entry[1], entry[2]
+            rule_remediation = entry[3] if len(entry) > 3 else remediation
+
+            # Skip rules excluded by config
+            if rule_id in self.config.exclude_rules:
+                continue
+
             for match in re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE):
-                # Find line number
                 line_num = content[:match.start()].count('\n') + 1
-                
-                # Get code snippet
                 snippet = lines[line_num - 1].strip() if line_num <= len(lines) else ''
-                
+
                 cwe_id, cwe_name, owasp = CWE_MAP.get(rule_id, ("", "", ""))
                 finding = Finding(
                     rule_id=rule_id,
@@ -339,7 +404,7 @@ class SecurityScanner:
                     file_path=str(file_path.relative_to(self.root)),
                     line_number=line_num,
                     code_snippet=snippet[:100],
-                    remediation=remediation,
+                    remediation=rule_remediation,
                     cwe_id=cwe_id,
                     cwe_name=cwe_name,
                     owasp=owasp,
@@ -489,31 +554,47 @@ def main():
         print(f"Error: Path '{args.path}' does not exist")
         sys.exit(1)
 
-    scanner = SecurityScanner(args.path)
-    checks = None if args.full else args.check
-    result = scanner.scan(checks)
+    # Load project config — CLI flags override config values
+    config = load_config(args.path)
 
-    # Filter by severity if specified
+    # CLI overrides
+    if args.full:
+        config.checks = None  # all checks
+    elif args.check:
+        config.checks = args.check
     if args.severity:
-        min_severity = Severity[args.severity.upper()]
-        result.findings = [f for f in result.findings if f.severity.value >= min_severity.value]
-
-    # Save baseline before applying diff (so the baseline reflects all findings)
+        config.severity_threshold = args.severity
+    if args.baseline:
+        config.baseline = args.baseline
     if args.save_baseline:
-        baseline_path = str(Path(args.path) / args.save_baseline) if not os.path.isabs(args.save_baseline) else args.save_baseline
+        config.baseline = None  # don't auto-apply when saving
+
+    scanner = SecurityScanner(args.path, config=config)
+    result = scanner.scan()
+
+    # Filter by severity threshold
+    min_severity = Severity[config.severity_threshold.upper()]
+    result.findings = [f for f in result.findings if f.severity.value >= min_severity.value]
+
+    # Save baseline before applying diff
+    if args.save_baseline:
+        baseline_path = args.save_baseline if os.path.isabs(args.save_baseline) else str(Path(args.path) / args.save_baseline)
         save_baseline(result, baseline_path)
 
-    # Apply baseline diff
+    # Apply baseline diff (from CLI flag or config)
     suppressed = 0
-    if args.baseline and not args.save_baseline:
-        baseline_path = str(Path(args.path) / args.baseline) if not os.path.isabs(args.baseline) else args.baseline
+    effective_baseline = None if args.save_baseline else (args.baseline or config.baseline)
+    if effective_baseline:
+        baseline_path = effective_baseline if os.path.isabs(effective_baseline) else str(Path(args.path) / effective_baseline)
         known = load_baseline(baseline_path)
         result.findings, suppressed = apply_baseline(result, known)
 
     print_results(result, args.json, suppressed=suppressed)
 
-    # Exit code for CI/CD
-    if args.fail_on_findings and result.findings:
+    # Exit code for CI/CD — use config.fail_on unless --fail-on-findings flag is set
+    fail_severity = Severity[config.fail_on.upper()]
+    critical_new = [f for f in result.findings if f.severity.value >= fail_severity.value]
+    if (args.fail_on_findings or config.fail_on) and critical_new:
         sys.exit(1)
 
 if __name__ == '__main__':
