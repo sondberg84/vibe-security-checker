@@ -35,6 +35,7 @@ class Finding:
     cwe_id: str = ""
     cwe_name: str = ""
     owasp: str = ""
+    fix_hint: str = ""
 
     def fingerprint(self) -> str:
         """Stable identity for this finding — survives line number shifts."""
@@ -156,6 +157,51 @@ CWE_MAP: Dict[str, tuple] = {
     **{r: ("CWE-502", "Deserialization of Untrusted Data", "A08:2021 – Software and Data Integrity Failures")
        for r in ("DATA-001","DATA-002","DATA-003")},
     "DATA-010": ("CWE-20", "Improper Input Validation", "A03:2021 – Injection"),
+}
+
+# ============================================================================
+# AUTO-FIX HINTS
+# Maps rule_id -> corrected code snippet shown alongside the finding
+# ============================================================================
+
+FIX_HINTS: Dict[str, str] = {
+    # Injection
+    "INJ-001": "cursor.execute('SELECT * FROM t WHERE id = %s', (user_id,))",
+    "INJ-002": "cursor.execute('SELECT * FROM t WHERE id = %s', (user_id,))",
+    "INJ-003": "cursor.execute('SELECT * FROM t WHERE id = %s', (user_id,))",
+    "INJ-004": "cursor.execute('SELECT * FROM t WHERE id = %s', (user_id,))",
+    "INJ-010": "subprocess.run(['cmd', arg], check=True)  # list args, no shell",
+    "INJ-011": "subprocess.run(['cmd', arg], check=True)  # remove shell=True",
+    "INJ-015": "subprocess.run(['cmd', arg], check=True)  # use list, not string concat",
+    "INJ-020": "element.textContent = userInput  # textContent is safe",
+    "INJ-021": "element.textContent = content  # avoid document.write()",
+    "INJ-040": "# Validate and sanitise path; use os.path.abspath() and check prefix",
+    "INJ-041": "safe = os.path.abspath(os.path.join(base_dir, user_path))\nassert safe.startswith(base_dir)",
+    "INJ-042": "safe = os.path.abspath(os.path.join(base_dir, user_path))\nassert safe.startswith(base_dir)",
+
+    # Auth / Crypto
+    "AUTH-001": "import bcrypt\nhashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())",
+    "AUTH-002": "import bcrypt\nhashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())",
+    "AUTH-003": "const bcrypt = require('bcrypt')\nawait bcrypt.hash(password, 12)",
+    "AUTH-004": "const bcrypt = require('bcrypt')\nawait bcrypt.hash(password, 12)",
+    "AUTH-010": "# Store token in an HttpOnly cookie instead of localStorage",
+    "AUTH-011": "# Store token in an HttpOnly cookie instead of sessionStorage",
+    "CRYPTO-001": "from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes\n# Use AES-256-GCM",
+    "CRYPTO-002": "from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes\n# Use AES-256-GCM",
+    "CRYPTO-003": "from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes\n# Use AES-256-GCM",
+    "CRYPTO-010": "import secrets\ntoken = secrets.token_hex(32)",
+    "CRYPTO-011": "crypto.randomUUID()  // or crypto.getRandomValues()",
+    "CRYPTO-012": "import secrets\nvalue = secrets.choice(sequence)",
+
+    # Data
+    "DATA-001": "import json\ndata = json.loads(serialized)  # use JSON, not pickle",
+    "DATA-002": "import yaml\ndata = yaml.safe_load(f)  # safe_load prevents code execution",
+    "DATA-003": "model = torch.load(path, weights_only=True)",
+
+    # Secrets
+    "SEC-012": "password = os.environ.get('DB_PASSWORD')  # use env var",
+    "SEC-013": "api_key = os.environ.get('API_KEY')  # use env var",
+    "SEC-017": "api_secret = os.environ.get('API_SECRET')  # use env var",
 }
 
 # ============================================================================
@@ -378,38 +424,47 @@ class SecurityScanner:
     
     def _check_patterns(self, file_path: Path, lines: List[str], patterns: List[tuple],
                         category: str, severity: Severity, remediation: str):
-        """Check file content against patterns."""
+        """Check file content against patterns. Reports first match per rule per file."""
         content = '\n'.join(lines)
+        rel_path = str(file_path.relative_to(self.root))
 
         for entry in patterns:
-            # Support 3-tuple (pattern, rule_id, description) or
-            # 4-tuple (pattern, rule_id, description, remediation_override)
             pattern, rule_id, description = entry[0], entry[1], entry[2]
             rule_remediation = entry[3] if len(entry) > 3 else remediation
 
-            # Skip rules excluded by config
             if rule_id in self.config.exclude_rules:
                 continue
 
-            for match in re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE):
-                line_num = content[:match.start()].count('\n') + 1
-                snippet = lines[line_num - 1].strip() if line_num <= len(lines) else ''
+            matches = list(re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE))
+            if not matches:
+                continue
 
-                cwe_id, cwe_name, owasp = CWE_MAP.get(rule_id, ("", "", ""))
-                finding = Finding(
-                    rule_id=rule_id,
-                    severity=severity,
-                    category=category,
-                    description=description,
-                    file_path=str(file_path.relative_to(self.root)),
-                    line_number=line_num,
-                    code_snippet=snippet[:100],
-                    remediation=rule_remediation,
-                    cwe_id=cwe_id,
-                    cwe_name=cwe_name,
-                    owasp=owasp,
-                )
-                self.result.add(finding)
+            # First match becomes the finding
+            match = matches[0]
+            line_num = content[:match.start()].count('\n') + 1
+            snippet = lines[line_num - 1].strip() if line_num <= len(lines) else ''
+
+            # Append "and N more" to description when duplicates exist
+            extra = len(matches) - 1
+            display_description = f"{description} (and {extra} more in this file)" if extra else description
+
+            cwe_id, cwe_name, owasp = CWE_MAP.get(rule_id, ("", "", ""))
+            fix_hint = FIX_HINTS.get(rule_id, "")
+            finding = Finding(
+                rule_id=rule_id,
+                severity=severity,
+                category=category,
+                description=display_description,
+                file_path=rel_path,
+                line_number=line_num,
+                code_snippet=snippet[:100],
+                remediation=rule_remediation,
+                cwe_id=cwe_id,
+                cwe_name=cwe_name,
+                owasp=owasp,
+                fix_hint=fix_hint,
+            )
+            self.result.add(finding)
 
 BASELINE_VERSION = 1
 DEFAULT_BASELINE = ".vibe-security-baseline.json"
@@ -485,6 +540,7 @@ def print_results(result: ScanResult, json_output: bool = False, suppressed: int
                     'cwe_id': f.cwe_id,
                     'cwe_name': f.cwe_name,
                     'owasp': f.owasp,
+                    'fix_hint': f.fix_hint,
                 }
                 for f in result.findings
             ]
@@ -526,6 +582,8 @@ def print_results(result: ScanResult, json_output: bool = False, suppressed: int
                 print(f"  File: {f.file_path}:{f.line_number}")
                 print(f"  Code: {f.code_snippet}")
                 print(f"  Fix:  {f.remediation}")
+                if f.fix_hint:
+                    print(f"  Hint: {f.fix_hint}")
     
     if not result.findings:
         print("✅ No security issues found!")

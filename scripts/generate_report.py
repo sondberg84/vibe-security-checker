@@ -271,25 +271,44 @@ def generate_sarif_report(results: Dict[str, Any]) -> Dict[str, Any]:
     for finding in sec.get('findings', []):
         # Add rule if not seen
         if finding['rule_id'] not in rules_seen:
-            sarif['runs'][0]['tool']['driver']['rules'].append({
+            rule_entry = {
                 "id": finding['rule_id'],
-                "name": finding['description'],
-                "shortDescription": {"text": finding['description']},
+                "name": finding['description'].split(" (and ")[0],  # strip dedup suffix
+                "shortDescription": {"text": finding['description'].split(" (and ")[0]},
                 "defaultConfiguration": {
                     "level": "error" if finding['severity'] in ['CRITICAL', 'HIGH'] else "warning"
+                },
+            }
+            # CWE / OWASP metadata
+            tags = []
+            if finding.get('cwe_id'):
+                cwe_num = finding['cwe_id'].replace("CWE-", "")
+                rule_entry["helpUri"] = f"https://cwe.mitre.org/data/definitions/{cwe_num}.html"
+                rule_entry["fullDescription"] = {
+                    "text": f"{finding['cwe_id']}: {finding.get('cwe_name', '')}. {finding.get('owasp', '')}"
                 }
-            })
+                tags.append(finding['cwe_id'])
+            if finding.get('owasp'):
+                tags.append(finding['owasp'].split(" – ")[0])  # e.g. "A03:2021"
+            if tags:
+                rule_entry["properties"] = {"tags": tags}
+            sarif['runs'][0]['tool']['driver']['rules'].append(rule_entry)
             rules_seen.add(finding['rule_id'])
-        
+
+        # Build message including fix hint when available
+        msg = finding['description']
+        if finding.get('fix_hint'):
+            msg += f"\n\nFix hint:\n{finding['fix_hint']}"
+
         # Add result
         sarif['runs'][0]['results'].append({
             "ruleId": finding['rule_id'],
             "level": "error" if finding['severity'] in ['CRITICAL', 'HIGH'] else "warning",
-            "message": {"text": finding['description']},
+            "message": {"text": msg},
             "locations": [{
                 "physicalLocation": {
-                    "artifactLocation": {"uri": finding['file']},
-                    "region": {"startLine": finding['line']}
+                    "artifactLocation": {"uri": finding['file'].replace("\\", "/")},
+                    "region": {"startLine": max(1, finding['line'])}
                 }
             }]
         })
