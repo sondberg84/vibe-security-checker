@@ -64,10 +64,15 @@ SECRETS_PATTERNS = [
     (r'["\']password123["\']', 'SEC-009', 'Weak hardcoded password'),
     (r'["\']admin@example\.com["\']', 'SEC-010', 'AI-generated test credential'),
     (r'["\']changeme["\']', 'SEC-011', 'Placeholder password'),
-    (r'password\s*=\s*["\'][^"\']+["\']', 'SEC-012', 'Hardcoded password assignment'),
-    (r'api[_-]?key\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']', 'SEC-013', 'Hardcoded API key'),
-    (r'api[_-]?secret\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']', 'SEC-017', 'Hardcoded API secret'),
+    (r'["\']?password["\']?\s*[=:]\s*["\'][^"\']{1,}["\']', 'SEC-012', 'Hardcoded password assignment'),
+    (r'["\']?api[_-]?key["\']?\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']', 'SEC-013', 'Hardcoded API key'),
+    (r'["\']?api[_-]?secret["\']?\s*[=:]\s*["\'][a-zA-Z0-9]{16,}["\']', 'SEC-017', 'Hardcoded API secret'),
     (r'["\'](?:PK|AK)[A-Z0-9]{20,}["\']', 'SEC-018', 'Alpaca API key (paper=PK, live=AK)'),
+    (r'["\']sk-ant-[a-zA-Z0-9_-]{40,}["\']', 'SEC-019', 'Anthropic API key'),
+    (r'["\']sk-[a-zA-Z0-9]{48}["\']', 'SEC-020', 'OpenAI API key'),
+
+    # .env-style unquoted secrets (KEY=value without quotes)
+    (r'^[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD)[A-Z_]*=[A-Za-z0-9+/]{16,}$', 'SEC-021', 'Unquoted secret in env/config file'),
 
     # Database connection strings
     (r'mongodb(?:\+srv)?://[^"\'\s]+:[^"\'\s]+@', 'SEC-014', 'MongoDB connection with credentials'),
@@ -90,6 +95,12 @@ INJECTION_PATTERNS = {
         (r'eval\s*\(\s*(?:request|req|input|user)', 'INJ-012', 'eval() with user input'),
         (r'exec\s*\(\s*(?:request|req|input|user)', 'INJ-013', 'exec() with user input'),
         (r'child_process\.exec\s*\(', 'INJ-014', 'Node.js exec() command injection risk'),
+        (r'subprocess\.[a-z]+\s*\(\s*[^)\[]*\+', 'INJ-015', 'subprocess with string concatenation (use list args)'),
+    ],
+    'path_traversal': [
+        (r'\.\.[\\/]', 'INJ-040', 'Path traversal sequence ../'),
+        (r'os\.path\.join\s*\([^)]*(?:request\.|req\.|input\(|user_)', 'INJ-041', 'os.path.join with user input'),
+        (r'open\s*\(\s*(?:request\.|req\.|input\(|user_)', 'INJ-042', 'open() with user-controlled path'),
     ],
     'xss': [
         (r'innerHTML\s*=\s*(?![\'"]\s*[\'"])', 'INJ-020', 'innerHTML assignment (XSS risk)'),

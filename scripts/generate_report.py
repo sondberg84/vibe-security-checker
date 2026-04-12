@@ -5,6 +5,7 @@ Generates comprehensive security report in multiple formats
 """
 
 import os
+import sys
 import json
 import argparse
 import subprocess
@@ -27,7 +28,7 @@ def run_all_checks(project_path: str) -> Dict[str, Any]:
     # Run project detection
     try:
         result = subprocess.run(
-            ['python3', str(script_dir / 'detect_project.py'), project_path, '--json'],
+            [sys.executable, str(script_dir / 'detect_project.py'), project_path, '--json'],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
@@ -38,7 +39,7 @@ def run_all_checks(project_path: str) -> Dict[str, Any]:
     # Run security scan
     try:
         result = subprocess.run(
-            ['python3', str(script_dir / 'scan_security.py'), project_path, '--full', '--json'],
+            [sys.executable, str(script_dir / 'scan_security.py'), project_path, '--full', '--json'],
             capture_output=True, text=True, timeout=120
         )
         if result.returncode == 0:
@@ -49,7 +50,7 @@ def run_all_checks(project_path: str) -> Dict[str, Any]:
     # Run dependency check
     try:
         result = subprocess.run(
-            ['python3', str(script_dir / 'check_dependencies.py'), project_path, '--json'],
+            [sys.executable, str(script_dir / 'check_dependencies.py'), project_path, '--json'],
             capture_output=True, text=True, timeout=60
         )
         if result.returncode == 0:
@@ -72,8 +73,8 @@ def generate_markdown_report(results: Dict[str, Any]) -> str:
     lines.append("## Executive Summary")
     lines.append("")
     
-    sec = results.get('security_findings', {})
-    dep = results.get('dependency_findings', {})
+    sec = results.get('security_findings') or {}
+    dep = results.get('dependency_findings') or {}
     
     critical = sec.get('critical', 0)
     high = sec.get('high', 0)
@@ -194,8 +195,8 @@ def generate_sarif_report(results: Dict[str, Any]) -> Dict[str, Any]:
     }
     
     rules_seen = set()
-    sec = results.get('security_findings', {})
-    
+    sec = results.get('security_findings') or {}
+
     for finding in sec.get('findings', []):
         # Add rule if not seen
         if finding['rule_id'] not in rules_seen:
