@@ -25,7 +25,9 @@ from typing import List, Optional
 try:
     from .scan_security import SECRETS_PATTERNS, _shannon_entropy, _ENTROPY_VAR_RE, ENTROPY_THRESHOLD
 except ImportError:
-    sys.path.insert(0, str(Path(__file__).parent))
+    _scripts_dir = str(Path(__file__).parent)
+    if _scripts_dir not in sys.path:
+        sys.path.insert(0, _scripts_dir)
     from scan_security import SECRETS_PATTERNS, _shannon_entropy, _ENTROPY_VAR_RE, ENTROPY_THRESHOLD
 
 # ── data ─────────────────────────────────────────────────────────────────────
