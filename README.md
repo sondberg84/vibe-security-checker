@@ -1,5 +1,9 @@
 # Vibe Security Checker
 
+[![CI](https://github.com/sondberg84/vibe-security-checker/actions/workflows/ci.yml/badge.svg)](https://github.com/sondberg84/vibe-security-checker/actions/workflows/ci.yml)
+[![Security Scan](https://github.com/sondberg84/vibe-security-checker/actions/workflows/self-scan.yml/badge.svg)](https://github.com/sondberg84/vibe-security-checker/actions/workflows/self-scan.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A fast, standalone security scanner for AI-generated ("vibe-coded") Python and JavaScript projects. Detects secrets, injection flaws, weak crypto, JWT misconfigs, SSRF, CVE-affected dependencies, and more — with no external API keys required.
 
 ---

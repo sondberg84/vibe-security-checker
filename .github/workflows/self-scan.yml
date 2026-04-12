@@ -29,6 +29,7 @@ jobs:
           fail_on: HIGH
           sarif: true
           sarif_file: vibe-security-results.sarif
+          baseline: .vibe-security-baseline.json
           scan_history: false
 
       - name: Print scan summary

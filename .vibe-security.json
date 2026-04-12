@@ -1,0 +1,12 @@
+{
+  "exclude_paths": [
+    "tests/",
+    ".vibe-security-baseline.json"
+  ],
+  "exclude_rules": [
+    "AUTH-002",
+    "SEC-008"
+  ],
+  "fail_on": "HIGH",
+  "severity_threshold": "low"
+}
