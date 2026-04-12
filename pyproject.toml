@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "vibe-security-checker"
@@ -34,13 +34,18 @@ dev = ["requests>=2.28"]
 
 [project.scripts]
 vibe-security-checker = "vibe_security_checker.cli:main"
+vibe-check-deps        = "vibe_security_checker.check_dependencies:main"
+vibe-git-history       = "vibe_security_checker.scan_git_history:main"
+vibe-report            = "vibe_security_checker.generate_report:main"
+vibe-install-hooks     = "vibe_security_checker.install_hooks:main"
+vibe-install-vscode    = "vibe_security_checker.install_vscode:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
+[tool.setuptools]
+packages = ["vibe_security_checker"]
 
 [tool.setuptools.package-dir]
 "vibe_security_checker" = "scripts"
 
 [project.urls]
 Homepage = "https://github.com/sondberg84/vibe-security-checker"
-Issues = "https://github.com/sondberg84/vibe-security-checker/issues"
+Issues   = "https://github.com/sondberg84/vibe-security-checker/issues"

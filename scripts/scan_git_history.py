@@ -22,8 +22,11 @@ from pathlib import Path
 from typing import List, Optional
 
 # Import secret patterns from the main scanner
-sys.path.insert(0, str(Path(__file__).parent))
-from scan_security import SECRETS_PATTERNS, _shannon_entropy, _ENTROPY_VAR_RE, ENTROPY_THRESHOLD
+try:
+    from .scan_security import SECRETS_PATTERNS, _shannon_entropy, _ENTROPY_VAR_RE, ENTROPY_THRESHOLD
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from scan_security import SECRETS_PATTERNS, _shannon_entropy, _ENTROPY_VAR_RE, ENTROPY_THRESHOLD
 
 # ── data ─────────────────────────────────────────────────────────────────────
 

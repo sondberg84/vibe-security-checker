@@ -9,8 +9,12 @@ Contains:
 import json
 import sys
 
-from _models import Finding, ScanResult, Severity
-from _rules import _mask_snippet
+try:
+    from ._models import Finding, ScanResult, Severity
+    from ._rules import _mask_snippet
+except ImportError:
+    from _models import Finding, ScanResult, Severity
+    from _rules import _mask_snippet
 
 
 def _display_snippet(f: Finding) -> str:

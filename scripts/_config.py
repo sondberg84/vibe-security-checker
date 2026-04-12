@@ -13,7 +13,10 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional, Set
 
-from _models import Severity  # noqa: F401 — re-exported for convenience
+try:
+    from ._models import Severity  # noqa: F401 — re-exported for convenience
+except ImportError:
+    from _models import Severity  # noqa: F401
 
 
 CONFIG_FILENAME = ".vibe-security.json"

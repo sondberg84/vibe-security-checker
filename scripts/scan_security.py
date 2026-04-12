@@ -21,19 +21,34 @@ from typing import List, Optional, Set
 # Re-exports — keep backward compatibility for all existing test imports
 # ---------------------------------------------------------------------------
 
-from _models import Severity, Finding, ScanResult                          # noqa: F401
-from _config import ScanConfig, load_config, CONFIG_FILENAME               # noqa: F401
-from _rules import (                                                        # noqa: F401
-    CWE_MAP, CONFIDENCE_MAP, FIX_HINTS, RULE_EXTENSIONS,
-    SECRETS_PATTERNS, INJECTION_PATTERNS, AUTH_PATTERNS,
-    CRYPTO_PATTERNS, CLOUD_PATTERNS, DATA_PATTERNS,
-    DEBUG_PATTERNS, HTTPS_PATTERNS, SSRF_PATTERNS,
-    JWT_PATTERNS, HEADER_PATTERNS, SCANNABLE_EXTENSIONS,
-    SKIP_DIRS, _shannon_entropy, _ENTROPY_VAR_RE,
-    ENTROPY_THRESHOLD, _mask_snippet, _MASK_RE,
-)
-from _baseline import save_baseline, load_baseline, apply_baseline, DEFAULT_BASELINE  # noqa: F401
-from _output import print_results, _display_snippet                         # noqa: F401
+try:
+    from ._models import Severity, Finding, ScanResult                      # noqa: F401
+    from ._config import ScanConfig, load_config, CONFIG_FILENAME           # noqa: F401
+    from ._rules import (                                                    # noqa: F401
+        CWE_MAP, CONFIDENCE_MAP, FIX_HINTS, RULE_EXTENSIONS,
+        SECRETS_PATTERNS, INJECTION_PATTERNS, AUTH_PATTERNS,
+        CRYPTO_PATTERNS, CLOUD_PATTERNS, DATA_PATTERNS,
+        DEBUG_PATTERNS, HTTPS_PATTERNS, SSRF_PATTERNS,
+        JWT_PATTERNS, HEADER_PATTERNS, SCANNABLE_EXTENSIONS,
+        SKIP_DIRS, _shannon_entropy, _ENTROPY_VAR_RE,
+        ENTROPY_THRESHOLD, _mask_snippet, _MASK_RE,
+    )
+    from ._baseline import save_baseline, load_baseline, apply_baseline, DEFAULT_BASELINE  # noqa: F401
+    from ._output import print_results, _display_snippet                    # noqa: F401
+except ImportError:
+    from _models import Severity, Finding, ScanResult                      # noqa: F401
+    from _config import ScanConfig, load_config, CONFIG_FILENAME           # noqa: F401
+    from _rules import (                                                    # noqa: F401
+        CWE_MAP, CONFIDENCE_MAP, FIX_HINTS, RULE_EXTENSIONS,
+        SECRETS_PATTERNS, INJECTION_PATTERNS, AUTH_PATTERNS,
+        CRYPTO_PATTERNS, CLOUD_PATTERNS, DATA_PATTERNS,
+        DEBUG_PATTERNS, HTTPS_PATTERNS, SSRF_PATTERNS,
+        JWT_PATTERNS, HEADER_PATTERNS, SCANNABLE_EXTENSIONS,
+        SKIP_DIRS, _shannon_entropy, _ENTROPY_VAR_RE,
+        ENTROPY_THRESHOLD, _mask_snippet, _MASK_RE,
+    )
+    from _baseline import save_baseline, load_baseline, apply_baseline, DEFAULT_BASELINE  # noqa: F401
+    from _output import print_results, _display_snippet                    # noqa: F401
 
 # Also pull in the fnmatch helper used by SecurityScanner
 from fnmatch import fnmatch

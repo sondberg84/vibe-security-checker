@@ -15,7 +15,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Set
 
-from _models import ScanResult
+try:
+    from ._models import ScanResult
+except ImportError:
+    from _models import ScanResult
 
 
 BASELINE_VERSION = 1
