@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: ["**"]
 
+permissions:
+  contents: read
+  security-events: write   # required for SARIF upload
+
 jobs:
   security-scan:
     runs-on: ubuntu-latest
@@ -32,12 +36,12 @@ jobs:
             python vibe-security-checker/scripts/scan_security.py . \
               --full --json \
               --baseline .vibe-security-baseline.json \
-              > scan_results.json
+              > scan_results.json || true
           else
             echo "No baseline — reporting all findings"
             python vibe-security-checker/scripts/scan_security.py . \
               --full --json \
-              > scan_results.json
+              > scan_results.json || true
           fi
           cat scan_results.json
 
@@ -68,6 +72,7 @@ jobs:
 
       - name: Upload SARIF to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: results.sarif
+        continue-on-error: true
