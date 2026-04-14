@@ -27,8 +27,7 @@ jobs:
           path: .
           full: true
           fail_on: HIGH
-          sarif: true
-          sarif_file: vibe-security-results.sarif
+          sarif: false
           baseline: .vibe-security-baseline.json
           scan_history: false
 
