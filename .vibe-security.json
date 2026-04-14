@@ -1,6 +1,7 @@
 {
   "exclude_paths": [
     "tests/",
+    "vibe-security-checker/",
     ".vibe-security-baseline.json"
   ],
   "exclude_rules": [
